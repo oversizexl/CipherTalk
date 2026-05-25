@@ -1,0 +1,69 @@
+name: 🚀 一键自动复制最新 Release（含附件）
+
+on:
+  workflow_dispatch:
+
+jobs:
+  copy-latest-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout your repository
+        uses: actions/checkout@v4
+
+      - name: Install GitHub CLI
+        run: sudo apt update && sudo apt install gh -y
+
+      - name: 一键复制上游最新 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🔄 正在从上游复制最新 Release..."
+
+          # 上游仓库（请确认这是你需要同步的源仓库）
+          UPSTREAM_REPO="ILoveBingLu/CipherTalk"
+
+          # 优先获取最新的正式版（非 prerelease）
+          LATEST_TAG=$(gh release list --repo $UPSTREAM_REPO --limit 10 --json tagName,isPrerelease |
+                       jq -r '.[] | select(.isPrerelease == false) | .tagName' | head -n 1)
+
+          # 如果没有正式版，则使用最新的版本（可能是 nightly/prerelease）
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG=$(gh release list --repo $UPSTREAM_REPO --limit 1 --json tagName --jq '.[0].tagName')
+          fi
+
+          echo "📦 目标版本: $LATEST_TAG"
+
+          # 下载附件（如果有）
+          mkdir -p ./assets
+          gh release download "$LATEST_TAG" --repo $UPSTREAM_REPO --dir ./assets --skip-existing --pattern "*" || echo "⚠️ 该版本没有附件"
+
+          # 获取 Release 详细信息
+          NAME=$(gh release view "$LATEST_TAG" --repo $UPSTREAM_REPO --json name --jq '.name // .tagName')
+          BODY=$(gh release view "$LATEST_TAG" --repo $UPSTREAM_REPO --json body --jq '.body // ""')
+          IS_PRERELEASE=$(gh release view "$LATEST_TAG" --repo $UPSTREAM_REPO --json isPrerelease --jq '.isPrerelease')
+
+          echo "正在复制到你的仓库..."
+
+          # 删除已存在的相同版本（避免冲突）
+          gh release delete "$LATEST_TAG" --repo oversizexl/CipherTalk --yes 2>/dev/null || true
+
+          # 创建 Release
+          if [ -n "$(ls ./assets 2>/dev/null)" ]; then
+            gh release create "$LATEST_TAG" ./assets/* \
+              --repo oversizexl/CipherTalk \
+              --title "$NAME" \
+              --notes "$BODY" \
+              $( [ "$IS_PRERELEASE" = "true" ] && echo "--prerelease" || echo "" )
+          else
+            gh release create "$LATEST_TAG" \
+              --repo oversizexl/CipherTalk \
+              --title "$NAME" \
+              --notes "$BODY" \
+              $( [ "$IS_PRERELEASE" = "true" ] && echo "--prerelease" || echo "" )
+          fi
+
+          echo "✅ 复制完成！"
+          echo "🔗 https://github.com/oversizexl/CipherTalk/releases/tag/$LATEST_TAG"
