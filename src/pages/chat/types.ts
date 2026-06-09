@@ -1,19 +1,6 @@
 import type { ChatSession, Message } from '../../types/models'
 
-export type QuoteStyle = 'default' | 'wechat'
-
-export interface SessionDetail {
-  wxid: string
-  displayName: string
-  remark?: string
-  nickName?: string
-  alias?: string
-  avatarUrl?: string
-  messageCount: number
-  firstMessageTime?: number
-  latestMessageTime?: number
-  messageTables: { dbName: string; tableName: string; count: number }[]
-}
+export type QuoteStyle = 'default' | 'wechat' | 'card'
 
 export type MessageContextHandlers = {
   reTranscribe?: () => void
@@ -32,9 +19,4 @@ export type BatchImageMessage = {
   imageMd5?: string
   imageDatName?: string
   createTime?: number
-}
-
-export type TopToastState = {
-  text: string
-  success: boolean
 }
