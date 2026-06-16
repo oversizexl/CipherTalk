@@ -3,6 +3,7 @@
  * 编排全程跑在独立的 AI utilityProcess 子进程（见 Docs/密语AI-Agent开发文档（AI-SDK版）.md §3.1）。
  */
 import type { JSONSchema7, ModelMessage, UIMessageChunk } from 'ai'
+import type { CodeWorkspaceRef } from './codeWorkspaceTypes'
 
 /** AI SDK provider 协议种类（对齐 ai/providers/base.ts 的 ProviderKind）。 */
 export type ProviderKind = 'openai-responses' | 'openai-compatible' | 'anthropic' | 'google'
@@ -35,6 +36,8 @@ export interface AgentProviderConfigOverride {
 export type AgentScope =
   | { kind: 'global' }
   | { kind: 'session'; sessionId: string; displayName?: string }
+  /** 克隆好友对话（personaChatEngine），sessionId 为被克隆好友的会话 */
+  | { kind: 'persona'; sessionId: string; displayName?: string }
 
 export interface AgentMcpToolDescriptor {
   name: string
@@ -43,6 +46,8 @@ export interface AgentMcpToolDescriptor {
   description?: string
   inputSchema?: JSONSchema7
 }
+
+export type AgentToolProfile = 'chat' | 'code' | 'hybrid'
 
 export interface AgentSkillContextItem {
   name: string
@@ -64,8 +69,13 @@ export interface AgentProgressEvent {
   stage: AgentProgressStage
   title: string
   detail?: string
+  visible?: boolean
+  category?: 'prep' | 'tool' | 'memory' | 'search' | 'system'
   toolName?: string
   toolCallId?: string
+  parentToolCallId?: string
+  subTaskId?: string
+  subTaskTitle?: string
   sessionId?: string
   elapsedMs?: number
   messagesScanned?: number
@@ -86,6 +96,21 @@ export interface AgentRunInput {
   scope: AgentScope
   mcpTools?: AgentMcpToolDescriptor[]
   skills?: AgentSkillContextItem[]
+  /** 禁用工具装配：用于微信机器人这类只需要纯文本回复的外部入口。 */
+  toolMode?: 'default' | 'disabled'
+  /** 输出场景：微信入口会追加微信发送约定，软件内聊天保持默认。 */
+  outputMode?: 'default' | 'wechat'
+  /**
+   * 仅用于微信官方机器人入口：允许工具返回图片/文件作为"当前触发会话的回复附件"。
+   * 不允许模型指定联系人、群、toUserId 或跨会话发送。
+   */
+  allowWechatReplyMedia?: boolean
+  /** 计划模式：开启后本轮只制定执行计划、不给最终结论（见 prompts.ts PLAN_MODE_PROMPT）。 */
+  planMode?: boolean
+  /** 工具画像：chat=聊天/记忆工具，code=代码工作区工具，hybrid=两者同时挂载。 */
+  toolProfile?: AgentToolProfile
+  /** 用户选择的代码工作区；真正的文件/命令操作仍由主进程 CodeWorkspaceService 代理并审批。 */
+  codeWorkspace?: CodeWorkspaceRef | null
 }
 
 // ========= 主进程 ↔ AI 子进程 postMessage 协议 =========
@@ -95,6 +120,8 @@ export type AgentRequest =
   | { id: number; type: 'ping' }
   | { id: number; type: 'run'; payload: { runId: string } & AgentRunInput }
   | { id: number; type: 'abort'; payload: { runId: string } }
+  | { id: number; type: 'extractPersona'; payload: import('./persona/personaTypes').PersonaExtractInput }
+  | { id: number; type: 'personaChat'; payload: { runId: string } & import('./persona/personaTypes').PersonaChatInput }
 
 export type AgentResponse =
   | { id: number; result?: unknown; error?: string }

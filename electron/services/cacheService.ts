@@ -1,7 +1,8 @@
 import { join } from 'path'
-import { existsSync, rmSync, readdirSync, statSync } from 'fs'
+import { existsSync, rmSync, promises as fsp } from 'fs'
 import { app } from 'electron'
 import { ConfigService } from './config'
+import { getUserDataPath } from './runtimePaths'
 import type { AccountProfile } from '../../src/types/account'
 
 /**
@@ -13,7 +14,7 @@ import type { AccountProfile } from '../../src/types/account'
  *
  * 目前真正生效的能力：
  * - 清理图片缓存 / 表情包缓存 / 日志
- * - 清理已移除 AI 功能生成的本地数据库
+ * - 清理 AI 功能生成的本地数据库和生成文件缓存
  * - 读取缓存体积概览（数据库项固定为 0）
  * - 账号配置清理
  */
@@ -142,6 +143,16 @@ export class CacheService {
         }
       }
 
+      for (const dirPath of this.getAIDataDirs()) {
+        if (!existsSync(dirPath)) continue
+        try {
+          rmSync(dirPath, { recursive: true, force: true })
+          deletedFiles.push(dirPath)
+        } catch (e) {
+          failedFiles.push({ path: dirPath, error: String(e) })
+        }
+      }
+
       if (failedFiles.length > 0) {
         return {
           success: false,
@@ -158,7 +169,7 @@ export class CacheService {
   }
 
   /**
-   * 清除所有缓存（图片 / 表情包 / 日志；不含数据库）
+   * 清除所有缓存（图片 / 表情包 / 日志 / AI 数据；不含微信原始数据库）
    */
   async clearAll(): Promise<{ success: boolean; error?: string }> {
     try {
@@ -277,19 +288,19 @@ export class CacheService {
       // 图片（所有可能路径）
       let imagesSize = 0
       for (const imgPath of this.getImagesCachePaths()) {
-        imagesSize += this.getFolderSize(imgPath)
+        imagesSize += await this.getFolderSize(imgPath)
       }
 
       // 表情包（新目录 + 旧 CipherTalk 目录）
-      let emojisSize = this.getFolderSize(join(cachePath, 'Emojis'))
-      emojisSize += this.getFolderSize(join(documentsPath, 'CipherTalk', 'Emojis'))
+      let emojisSize = await this.getFolderSize(join(cachePath, 'Emojis'))
+      emojisSize += await this.getFolderSize(join(documentsPath, 'CipherTalk', 'Emojis'))
 
       // 日志
-      const logsSize = this.getFolderSize(join(cachePath, 'logs'))
+      const logsSize = await this.getFolderSize(join(cachePath, 'logs'))
 
       // 数据库项不再统计
       const databasesSize = 0
-      const aiDataSize = this.getAIDataSize()
+      const aiDataSize = await this.getAIDataSize()
 
       const size = {
         images: imagesSize,
@@ -307,27 +318,26 @@ export class CacheService {
   }
 
   /**
-   * 获取文件夹大小（递归）
+   * 获取文件夹大小（递归，异步）。
+   * 用 fs/promises 让出事件循环，避免同步遍历大目录（图片/表情/AI 缓存可达数 GB）时阻塞主进程。
    */
-  private getFolderSize(folderPath: string): number {
-    if (!existsSync(folderPath)) return 0
-
-    let totalSize = 0
+  private async getFolderSize(folderPath: string): Promise<number> {
+    let entries
     try {
-      const files = readdirSync(folderPath)
-      for (const file of files) {
-        const filePath = join(folderPath, file)
-        const stat = statSync(filePath)
-        if (stat.isDirectory()) {
-          totalSize += this.getFolderSize(filePath)
-        } else {
-          totalSize += stat.size
-        }
-      }
+      entries = await fsp.readdir(folderPath, { withFileTypes: true })
     } catch {
-      // 忽略权限错误等
+      return 0 // 目录不存在或无权限
     }
-    return totalSize
+    const sizes = await Promise.all(entries.map(async (entry) => {
+      const filePath = join(folderPath, entry.name)
+      try {
+        if (entry.isDirectory()) return await this.getFolderSize(filePath)
+        return (await fsp.stat(filePath)).size
+      } catch {
+        return 0 // 忽略权限错误等
+      }
+    }))
+    return sizes.reduce((sum, size) => sum + size, 0)
   }
 
   private getAIDataDbPaths(): string[] {
@@ -340,10 +350,10 @@ export class CacheService {
 
     const dbNames = [
       'ai_summary.db',
-      'agent_memory.db',
       'chat_search_index.db',
       'chat_vectors.db',
-      'agent_conversations.db'
+      'agent_conversations.db',
+      'tts-cache.db'
     ]
 
     return Array.from(new Set(
@@ -360,20 +370,42 @@ export class CacheService {
     ]
   }
 
-  private getAIDataSize(): number {
+  private async getAIDataSize(): Promise<number> {
     let total = 0
     for (const dbPath of this.getAIDataDbPaths()) {
       for (const filePath of this.getSqliteFileSet(dbPath)) {
         try {
-          if (existsSync(filePath)) {
-            total += statSync(filePath).size
-          }
+          total += (await fsp.stat(filePath)).size
         } catch {
-          // ignore
+          // 文件不存在/无权限：忽略
         }
       }
     }
+    for (const dirPath of this.getAIDataDirs()) {
+      total += await this.getFolderSize(dirPath)
+    }
     return total
+  }
+
+  private getAIDataDirs(): string[] {
+    const configuredCachePath = String(this.configService.get('cachePath') || '').trim()
+    const basePaths = [
+      configuredCachePath,
+      this.getEffectiveCachePath(),
+      join(process.cwd(), 'cache')
+    ].filter(Boolean)
+
+    return Array.from(new Set(
+      [
+        ...basePaths.flatMap(basePath => [
+          join(basePath, 'memory-bank'),
+          join(basePath, 'tts-audio'),
+          join(basePath, 'ai-images')
+        ]),
+        // 兼容旧版本：AI 作图曾保存到 userData/ai-images。
+        join(getUserDataPath(), 'ai-images')
+      ]
+    ))
   }
 
   private async closeAIDataStores(): Promise<void> {
@@ -389,6 +421,9 @@ export class CacheService {
         .catch(() => undefined),
       import('./agent/conversationStore')
         .then(({ agentConversationStore }) => agentConversationStore.close())
+        .catch(() => undefined),
+      import('./ai/ttsService')
+        .then(({ closeTtsCache }) => closeTtsCache())
         .catch(() => undefined)
     ])
   }

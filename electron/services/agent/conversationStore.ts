@@ -14,6 +14,10 @@ export interface AgentConversationRecord {
   title: string
   modelProvider: string
   modelId: string
+  /** 对话来源：'app'（应用内）| 'wechat'（微信接入）等 */
+  source: string
+  /** 外部来源的稳定标识（如微信 from_user_id），用于按来源会话归档 */
+  externalId: string | null
   createdAt: number
   updatedAt: number
 }
@@ -35,6 +39,8 @@ interface CreateConversationInput {
   title?: string
   modelProvider?: string
   modelId?: string
+  source?: string
+  externalId?: string | null
 }
 
 interface ListConversationOptions {
@@ -43,16 +49,16 @@ interface ListConversationOptions {
 }
 
 function toScope(kind: string, sessionId?: string | null, displayName?: string | null): AgentScope {
-  if (kind === 'session' && sessionId) {
-    return { kind: 'session', sessionId, displayName: displayName || undefined }
+  if ((kind === 'session' || kind === 'persona') && sessionId) {
+    return { kind, sessionId, displayName: displayName || undefined }
   }
   return { kind: 'global' }
 }
 
 function scopeColumns(scope?: AgentScope): { kind: string; sessionId: string | null; displayName: string | null } {
-  if (scope?.kind === 'session') {
+  if (scope?.kind === 'session' || scope?.kind === 'persona') {
     return {
-      kind: 'session',
+      kind: scope.kind,
       sessionId: scope.sessionId,
       displayName: scope.displayName || null,
     }
@@ -158,6 +164,17 @@ export class AgentConversationStore {
       CREATE INDEX IF NOT EXISTS idx_agent_msg_conv
         ON agent_messages(conversation_id, created_at ASC, id ASC);
     `)
+
+    // 增量迁移：旧库补上来源标志列
+    const cols = db.prepare('PRAGMA table_info(agent_conversations)').all() as Array<{ name: string }>
+    const names = new Set(cols.map((c) => c.name))
+    if (!names.has('source')) {
+      db.exec("ALTER TABLE agent_conversations ADD COLUMN source TEXT NOT NULL DEFAULT 'app'")
+    }
+    if (!names.has('external_id')) {
+      db.exec('ALTER TABLE agent_conversations ADD COLUMN external_id TEXT')
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_agent_conv_source ON agent_conversations(account_id, source, external_id)')
   }
 
   private mapConversation(row: any): AgentConversationRecord {
@@ -168,6 +185,8 @@ export class AgentConversationStore {
       title: String(row.title || '新对话'),
       modelProvider: String(row.model_provider || ''),
       modelId: String(row.model_id || ''),
+      source: String(row.source || 'app'),
+      externalId: row.external_id ? String(row.external_id) : null,
       createdAt: Number(row.created_at || 0),
       updatedAt: Number(row.updated_at || 0),
     }
@@ -180,9 +199,9 @@ export class AgentConversationStore {
     const filters = ['account_id = @accountId']
     const params: Record<string, unknown> = { accountId, limit }
 
-    if (options.scope?.kind === 'session') {
+    if (options.scope?.kind === 'session' || options.scope?.kind === 'persona') {
       filters.push('scope_kind = @scopeKind', 'session_id = @sessionId')
-      params.scopeKind = 'session'
+      params.scopeKind = options.scope.kind
       params.sessionId = options.scope.sessionId
     } else if (options.scope?.kind === 'global') {
       filters.push('scope_kind = @scopeKind')
@@ -207,8 +226,8 @@ export class AgentConversationStore {
     const result = db.prepare(`
       INSERT INTO agent_conversations (
         account_id, scope_kind, session_id, display_name, title,
-        model_provider, model_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        model_provider, model_id, source, external_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       accountId,
       scope.kind,
@@ -217,11 +236,32 @@ export class AgentConversationStore {
       String(input.title || '新对话').slice(0, 80),
       String(input.modelProvider || ''),
       String(input.modelId || ''),
+      String(input.source || 'app'),
+      input.externalId || null,
       now,
       now,
     )
 
     return this.loadMeta(Number(result.lastInsertRowid))
+  }
+
+  /** 按来源+外部标识找会话，没有就新建（用于微信等外部接入按联系人归档）。 */
+  getOrCreateExternal(input: { source: string; externalId: string; title?: string }): AgentConversationRecord {
+    const db = this.getDb()
+    const accountId = this.getAccountId()
+    const row = db.prepare(`
+      SELECT * FROM agent_conversations
+      WHERE account_id = ? AND source = ? AND external_id = ?
+      ORDER BY updated_at DESC, id DESC
+      LIMIT 1
+    `).get(accountId, input.source, input.externalId)
+    if (row) return this.mapConversation(row)
+    return this.create({ source: input.source, externalId: input.externalId, title: input.title })
+  }
+
+  /** 显式开启一个新的外部来源会话；旧会话保留，后续 getOrCreateExternal 会取最新这条。 */
+  createExternal(input: { source: string; externalId: string; title?: string }): AgentConversationRecord {
+    return this.create({ source: input.source, externalId: input.externalId, title: input.title })
   }
 
   load(id: number): AgentConversationLoaded | null {
@@ -257,6 +297,41 @@ export class AgentConversationStore {
     })
     tx(id)
     return { success: true }
+  }
+
+  removeByScope(scope: AgentScope): { success: boolean; deleted: number } {
+    const db = this.getDb()
+    const accountId = this.getAccountId()
+    const filters = ['account_id = @accountId', 'scope_kind = @scopeKind']
+    const params: Record<string, unknown> = {
+      accountId,
+      scopeKind: scope.kind,
+    }
+
+    if (scope.kind === 'session' || scope.kind === 'persona') {
+      filters.push('session_id = @sessionId')
+      params.sessionId = scope.sessionId
+    } else {
+      filters.push('session_id IS NULL')
+    }
+
+    const rows = db.prepare(`
+      SELECT id FROM agent_conversations
+      WHERE ${filters.join(' AND ')}
+    `).all(params) as Array<{ id: number }>
+    const ids = rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0)
+    if (ids.length === 0) return { success: true, deleted: 0 }
+
+    const tx = db.transaction((conversationIds: number[]) => {
+      const deleteMessages = db.prepare('DELETE FROM agent_messages WHERE conversation_id = ?')
+      const deleteConversation = db.prepare('DELETE FROM agent_conversations WHERE id = ?')
+      for (const conversationId of conversationIds) {
+        deleteMessages.run(conversationId)
+        deleteConversation.run(conversationId)
+      }
+    })
+    tx(ids)
+    return { success: true, deleted: ids.length }
   }
 
   rename(id: number, title: string): AgentConversationRecord {

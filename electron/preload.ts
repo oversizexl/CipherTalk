@@ -39,6 +39,90 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // AI 宠物（petdex 格式）
+  pet: {
+    listInstalled: () => ipcRenderer.invoke('pet:listInstalled') as Promise<{ success: boolean; pets?: Array<{ slug: string; displayName: string; description: string; builtin?: boolean }>; error?: string }>,
+    manifest: (force?: boolean) => ipcRenderer.invoke('pet:manifest', force) as Promise<{ success: boolean; pets?: Array<{ slug: string; displayName: string; kind?: string; submittedBy?: string; spritesheetUrl: string; petJsonUrl: string }>; error?: string }>,
+    install: (slug: string) => ipcRenderer.invoke('pet:install', slug) as Promise<{ success: boolean; pet?: { slug: string; displayName: string; description: string; builtin?: boolean }; error?: string }>,
+    remove: (slug: string) => ipcRenderer.invoke('pet:remove', slug) as Promise<{ success: boolean; error?: string }>,
+    importZip: () => ipcRenderer.invoke('pet:importZip') as Promise<{ success: boolean; canceled?: boolean; pet?: { slug: string; displayName: string; description: string; builtin?: boolean }; error?: string }>,
+    getSprite: (slug: string) => ipcRenderer.invoke('pet:getSprite', slug) as Promise<{ success: boolean; dataUrl?: string; error?: string }>,
+    setAgentState: (state: string) => ipcRenderer.send('pet:agentState', state),
+    sendAgentProgress: (progress: { stage: string; title: string; detail?: string }) => ipcRenderer.send('pet:agentProgress', progress),
+    getDailySummary: () => ipcRenderer.invoke('pet:getDailySummary') as Promise<{ success: boolean; text?: string; error?: string }>,
+    toggleDesktopWindow: (enabled: boolean) => ipcRenderer.invoke('pet:toggleDesktopWindow', enabled) as Promise<{ success: boolean }>,
+    setBubble: (expanded: boolean) => ipcRenderer.send('pet:setBubble', expanded),
+    showContextMenu: () => ipcRenderer.send('pet:showContextMenu'),
+    onAgentState: (callback: (state: string) => void) => {
+      const listener = (_: any, state: string) => callback(state)
+      ipcRenderer.on('pet:agentState', listener)
+      return () => { ipcRenderer.removeListener('pet:agentState', listener) }
+    },
+    onWindowMove: (callback: (x: number) => void) => {
+      const listener = (_: any, x: number) => callback(x)
+      ipcRenderer.on('pet:windowMove', listener)
+      return () => { ipcRenderer.removeListener('pet:windowMove', listener) }
+    },
+    onBubbleFrame: (callback: (frame: { expanded: boolean; baseLeft: number; baseTop: number; baseWidth: number; baseHeight: number }) => void) => {
+      const listener = (_: any, frame: any) => callback(frame)
+      ipcRenderer.on('pet:bubbleFrame', listener)
+      return () => { ipcRenderer.removeListener('pet:bubbleFrame', listener) }
+    },
+    onContextMenuOpened: (callback: () => void) => {
+      const listener = () => callback()
+      ipcRenderer.on('pet:contextMenuOpened', listener)
+      return () => { ipcRenderer.removeListener('pet:contextMenuOpened', listener) }
+    },
+    onNotify: (callback: (payload: { username: string; displayName: string; avatarUrl?: string; preview: string; timestamp: number }) => void) => {
+      const listener = (_: any, payload: any) => callback(payload)
+      ipcRenderer.on('pet:notify', listener)
+      return () => { ipcRenderer.removeListener('pet:notify', listener) }
+    },
+    onAgentProgress: (callback: (progress: { stage: string; title: string; detail?: string }) => void) => {
+      const listener = (_: any, progress: any) => callback(progress)
+      ipcRenderer.on('pet:agentProgress', listener)
+      return () => { ipcRenderer.removeListener('pet:agentProgress', listener) }
+    },
+    onBubble: (callback: (payload: { kind: string; title: string; text: string; id?: string }) => void) => {
+      const listener = (_: any, payload: any) => callback(payload)
+      ipcRenderer.on('pet:bubble', listener)
+      return () => { ipcRenderer.removeListener('pet:bubble', listener) }
+    }
+  },
+
+  // 消息提醒（会话级开关，默认全关）
+  notify: {
+    getEnabledSessions: () => ipcRenderer.invoke('notify:getEnabledSessions') as Promise<string[]>,
+    setSessionEnabled: (username: string, enabled: boolean) => ipcRenderer.invoke('notify:setSessionEnabled', username, enabled) as Promise<{ success: boolean }>,
+    setActiveSession: (sessionId: string | null) => ipcRenderer.send('notify:setActiveSession', sessionId),
+    activate: () => ipcRenderer.send('notify:activate'),
+  },
+
+  // 设备连接（微信 iLink 直连）
+  deviceConnect: {
+    wechat: {
+      getStatus: () => ipcRenderer.invoke('deviceConnect:wechat:getStatus') as Promise<{ status: 'disconnected' | 'connecting' | 'connected' | 'error'; botId: string | null; userId: string | null; error: string | null }>,
+      connect: () => ipcRenderer.invoke('deviceConnect:wechat:connect') as Promise<{ success: boolean; qrcodeImage?: string; error?: string }>,
+      cancel: () => ipcRenderer.invoke('deviceConnect:wechat:cancel') as Promise<{ success: boolean }>,
+      disconnect: () => ipcRenderer.invoke('deviceConnect:wechat:disconnect') as Promise<{ success: boolean }>,
+      onStatus: (callback: (payload: { status: 'disconnected' | 'connecting' | 'connected' | 'error'; botId: string | null; userId: string | null; error: string | null }) => void) => {
+        const listener = (_: any, payload: any) => callback(payload)
+        ipcRenderer.on('deviceConnect:wechat:status', listener)
+        return () => { ipcRenderer.removeListener('deviceConnect:wechat:status', listener) }
+      },
+      onQrcode: (callback: (payload: { qrcodeImage: string }) => void) => {
+        const listener = (_: any, payload: any) => callback(payload)
+        ipcRenderer.on('deviceConnect:wechat:qrcode', listener)
+        return () => { ipcRenderer.removeListener('deviceConnect:wechat:qrcode', listener) }
+      },
+      onScanState: (callback: (payload: { state: 'scaned' | 'failed'; error?: string }) => void) => {
+        const listener = (_: any, payload: any) => callback(payload)
+        ipcRenderer.on('deviceConnect:wechat:scanState', listener)
+        return () => { ipcRenderer.removeListener('deviceConnect:wechat:scanState', listener) }
+      },
+    },
+  },
+
   accounts: {
     list: () => ipcRenderer.invoke('accounts:list') as Promise<AccountProfile[]>,
     getActive: () => ipcRenderer.invoke('accounts:getActive') as Promise<AccountProfile | null>,
@@ -73,8 +157,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // AI Agent（主进程 broker → AI 子进程；流式 chunk 经 agent:chunk 推回）
   agent: {
-    run: (runId: string, messages: unknown[], scope?: unknown, modelConfig?: unknown, conversationId?: number | null) =>
-      ipcRenderer.invoke('agent:run', { runId, messages, scope, modelConfig, conversationId }) as Promise<{ success: boolean; error?: string }>,
+    run: (runId: string, messages: unknown[], scope?: unknown, modelConfig?: unknown, conversationId?: number | null, planMode?: boolean, toolProfile?: unknown, codeWorkspace?: unknown) =>
+      ipcRenderer.invoke('agent:run', { runId, messages, scope, modelConfig, conversationId, planMode, toolProfile, codeWorkspace }) as Promise<{ success: boolean; error?: string }>,
     abort: (runId: string) => ipcRenderer.invoke('agent:abort', runId) as Promise<{ success: boolean }>,
     generateTitle: (firstMessage: string, modelConfig?: unknown) =>
       ipcRenderer.invoke('agent:generateTitle', { firstMessage, modelConfig }) as Promise<{ success: boolean; title?: string; error?: string }>,
@@ -86,6 +170,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('agent:createConversation', payload) as Promise<{ success: boolean; conversation?: unknown; error?: string }>,
     deleteConversation: (id: number) =>
       ipcRenderer.invoke('agent:deleteConversation', id) as Promise<{ success: boolean; error?: string }>,
+    deleteConversationsByScope: (scope: unknown) =>
+      ipcRenderer.invoke('agent:deleteConversationsByScope', scope) as Promise<{ success: boolean; deleted?: number; error?: string }>,
     renameConversation: (id: number, title: string) =>
       ipcRenderer.invoke('agent:renameConversation', id, title) as Promise<{ success: boolean; conversation?: unknown; error?: string }>,
     saveConversationMessages: (payload: unknown) =>
@@ -108,11 +194,78 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
-  // AI 长期记忆管理（agent_memory.db）
+  agentWorkspace: {
+    selectWorkspace: () => ipcRenderer.invoke('agentWorkspace:selectWorkspace') as Promise<{ success: boolean; canceled?: boolean; state?: unknown; error?: string }>,
+    clearWorkspace: () => ipcRenderer.invoke('agentWorkspace:clearWorkspace') as Promise<{ success: boolean; state?: unknown; error?: string }>,
+    stopDevServer: () => ipcRenderer.invoke('agentWorkspace:stopDevServer') as Promise<{ success: boolean; state?: unknown; result?: unknown; error?: string }>,
+    getState: () => ipcRenderer.invoke('agentWorkspace:getState') as Promise<{ success: boolean; state?: unknown; error?: string }>,
+    setApprovalPolicy: (policy: unknown) => ipcRenderer.invoke('agentWorkspace:setApprovalPolicy', policy) as Promise<{ success: boolean; state?: unknown; error?: string }>,
+    listFiles: (payload: unknown) => ipcRenderer.invoke('agentWorkspace:listFiles', payload) as Promise<{ success: boolean; root?: string; items?: unknown[]; truncated?: boolean; error?: string }>,
+    approve: (requestId: string) => ipcRenderer.invoke('agentWorkspace:approve', requestId) as Promise<{ success: boolean }>,
+    reject: (requestId: string, _reason?: string) => ipcRenderer.invoke('agentWorkspace:reject', requestId) as Promise<{ success: boolean }>,
+    onApprovalRequest: (callback: (request: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, request: unknown) => callback(request)
+      ipcRenderer.on('agentWorkspace:approvalRequest', listener)
+      return () => ipcRenderer.removeListener('agentWorkspace:approvalRequest', listener)
+    },
+    onWorkspaceEvent: (callback: (event: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, event: unknown) => callback(event)
+      ipcRenderer.on('agentWorkspace:event', listener)
+      return () => ipcRenderer.removeListener('agentWorkspace:event', listener)
+    },
+  },
+
+  // 克隆好友（数字分身画像；构建进度经 persona:buildProgress 推回）
+  persona: {
+    get: (sessionId: string) =>
+      ipcRenderer.invoke('persona:get', sessionId) as Promise<{ success: boolean; persona?: unknown | null; error?: string }>,
+    list: () =>
+      ipcRenderer.invoke('persona:list') as Promise<{ success: boolean; personas?: unknown[]; error?: string }>,
+    build: (payload: { sessionId: string; displayName?: string }) =>
+      ipcRenderer.invoke('persona:build', payload) as Promise<{ success: boolean; persona?: unknown; error?: string }>,
+    cloneVoice: (payload: { sessionId: string; displayName?: string }) =>
+      ipcRenderer.invoke('persona:cloneVoice', payload) as Promise<{ success: boolean; persona?: unknown; voice?: unknown; warning?: string; error?: string }>,
+    exportVoiceSample: (payload: { sessionId: string; displayName?: string; outputPath: string }) =>
+      ipcRenderer.invoke('persona:exportVoiceSample', payload) as Promise<{ success: boolean; outputPath?: string; sampleCount?: number; sampleSeconds?: number; audioBytes?: number; error?: string }>,
+    delete: (sessionId: string) =>
+      ipcRenderer.invoke('persona:delete', sessionId) as Promise<{ success: boolean; error?: string }>,
+    refreshIfStale: (sessionId: string) =>
+      ipcRenderer.invoke('persona:refreshIfStale', { sessionId }) as Promise<{ success: boolean; refreshed?: boolean; persona?: unknown | null; error?: string }>,
+    reflect: (payload: { sessionId: string; conversationId: number }) =>
+      ipcRenderer.invoke('persona:reflect', payload) as Promise<{ success: boolean; reflected?: boolean; error?: string }>,
+    onBuildProgress: (callback: (progress: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, progress: unknown) => callback(progress)
+      ipcRenderer.on('persona:buildProgress', listener)
+      return () => ipcRenderer.removeListener('persona:buildProgress', listener)
+    },
+    chat: (runId: string, sessionId: string, messages: unknown[]) =>
+      ipcRenderer.invoke('persona:chat', { runId, sessionId, messages }) as Promise<{ success: boolean; error?: string }>,
+    abort: (runId: string) => ipcRenderer.invoke('persona:abort', runId) as Promise<{ success: boolean }>,
+    onChunk: (runId: string, callback: (chunk: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, data: { runId: string; chunk: unknown }) => {
+        if (data?.runId === runId) callback(data.chunk)
+      }
+      ipcRenderer.on('persona:chunk', listener)
+      return () => ipcRenderer.removeListener('persona:chunk', listener)
+    },
+    onProgress: (runId: string, callback: (progress: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, data: { runId: string; progress: unknown }) => {
+        if (data?.runId === runId) callback(data.progress)
+      }
+      ipcRenderer.on('persona:progress', listener)
+      return () => ipcRenderer.removeListener('persona:progress', listener)
+    },
+  },
+
+  // AI 长期记忆管理（cachePath/memory-bank）
   memory: {
+    migrationStatus: () =>
+      ipcRenderer.invoke('memory:migrationStatus') as Promise<{ success: boolean; status?: unknown; error?: string }>,
+    migrateLegacy: () =>
+      ipcRenderer.invoke('memory:migrateLegacy') as Promise<{ success: boolean; result?: unknown; error?: string }>,
     list: (opts?: {
-      sourceType?: 'profile' | 'fact' | 'relationship'
-      sourceTypes?: Array<'profile' | 'fact' | 'relationship'>
+      sourceType?: string
+      sourceTypes?: string[]
       sessionId?: string
       tags?: string[]
       withoutTags?: string[]
@@ -120,9 +273,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
       limit?: number
     }) =>
       ipcRenderer.invoke('memory:list', opts) as Promise<{ success: boolean; items?: unknown[]; stats?: { itemCount: number }; error?: string }>,
+    listDiaries: (limit?: number) =>
+      ipcRenderer.invoke('memory:listDiaries', limit) as Promise<{ success: boolean; diaries?: unknown[]; error?: string }>,
+    readDiary: (date: string) =>
+      ipcRenderer.invoke('memory:readDiary', date) as Promise<{ success: boolean; diary?: unknown; error?: string }>,
+    deleteDiary: (date: string) =>
+      ipcRenderer.invoke('memory:deleteDiary', date) as Promise<{ success: boolean; error?: string }>,
+    summarizeTodayDiary: () =>
+      ipcRenderer.invoke('memory:summarizeTodayDiary') as Promise<{ success: boolean; alreadyExists?: boolean; diary?: unknown; error?: string }>,
+    create: (payload: {
+      memoryUid?: string
+      sourceType?: string
+      content?: string
+      title?: string
+      importance?: number
+      confidence?: number
+      tags?: string[]
+    }) =>
+      ipcRenderer.invoke('memory:create', payload) as Promise<{ success: boolean; item?: unknown; error?: string }>,
     delete: (id: number) =>
       ipcRenderer.invoke('memory:delete', id) as Promise<{ success: boolean; error?: string }>,
-    update: (payload: { id: number; sourceType?: 'profile' | 'fact' | 'relationship'; content?: string; importance?: number; confidence?: number; tags?: string[] }) =>
+    update: (payload: { id: number; sourceType?: string; content?: string; importance?: number; confidence?: number; tags?: string[] }) =>
       ipcRenderer.invoke('memory:update', payload) as Promise<{ success: boolean; item?: unknown; error?: string }>,
     consolidate: () =>
       ipcRenderer.invoke('memory:consolidate') as Promise<{ success: boolean; result?: { removed: number; groups: number; scanned: number }; error?: string }>,
@@ -137,19 +308,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     test: (cfg: unknown) => ipcRenderer.invoke('embedding:test', cfg) as Promise<{ success: boolean; dimension?: number; error?: string }>,
     sessionStatus: (sessionId: string) => ipcRenderer.invoke('embedding:sessionStatus', sessionId) as Promise<{ success: boolean; enabled?: boolean; count?: number; store?: unknown; error?: string }>,
     buildSession: (sessionId: string) => ipcRenderer.invoke('embedding:buildSession', sessionId) as Promise<{ success: boolean; indexed?: number; error?: string }>,
-    agentResourceStatus: (kind: 'skill' | 'mcp_tool') =>
-      ipcRenderer.invoke('embedding:agentResourceStatus', kind) as Promise<{ success: boolean; status?: unknown; error?: string }>,
-    buildAgentResources: (kind: 'skill' | 'mcp_tool') =>
-      ipcRenderer.invoke('embedding:buildAgentResources', kind) as Promise<{ success: boolean; indexed?: number; error?: string }>,
     onBuildProgress: (callback: (progress: unknown) => void): (() => void) => {
       const listener = (_e: unknown, progress: unknown) => callback(progress)
       ipcRenderer.on('embedding:buildProgress', listener)
       return () => ipcRenderer.removeListener('embedding:buildProgress', listener)
-    },
-    onAgentResourceBuildProgress: (callback: (progress: unknown) => void): (() => void) => {
-      const listener = (_e: unknown, progress: unknown) => callback(progress)
-      ipcRenderer.on('embedding:agentResourceBuildProgress', listener)
-      return () => ipcRenderer.removeListener('embedding:agentResourceBuildProgress', listener)
     },
   },
 
@@ -158,6 +320,37 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getConfig: () => ipcRenderer.invoke('rerank:getConfig') as Promise<{ success: boolean; config?: unknown; error?: string }>,
     setConfig: (patch: unknown) => ipcRenderer.invoke('rerank:setConfig', patch) as Promise<{ success: boolean; config?: unknown; error?: string }>,
     test: (cfg: unknown) => ipcRenderer.invoke('rerank:test', cfg) as Promise<{ success: boolean; error?: string }>,
+  },
+
+  // 联网搜索（Tavily）—— AI Agent web_search 工具
+  webSearch: {
+    getConfig: () => ipcRenderer.invoke('webSearch:getConfig') as Promise<{ success: boolean; config?: unknown; error?: string }>,
+    setConfig: (patch: unknown) => ipcRenderer.invoke('webSearch:setConfig', patch) as Promise<{ success: boolean; config?: unknown; error?: string }>,
+    test: (cfg: unknown) => ipcRenderer.invoke('webSearch:test', cfg) as Promise<{ success: boolean; resultCount?: number; error?: string }>,
+  },
+
+  // 文字转语音 —— 朗读 AI 回复/微信消息/角色语音回复
+  tts: {
+    getConfig: () => ipcRenderer.invoke('tts:getConfig') as Promise<{ success: boolean; config?: unknown; available?: boolean; error?: string }>,
+    setConfig: (patch: unknown) => ipcRenderer.invoke('tts:setConfig', patch) as Promise<{ success: boolean; config?: unknown; error?: string }>,
+    test: (cfg: unknown) => ipcRenderer.invoke('tts:test', cfg) as Promise<{ success: boolean; audioBase64?: string; mimeType?: string; cached?: boolean; error?: string; errorCode?: string }>,
+    speak: (text: string, options?: unknown) => ipcRenderer.invoke('tts:speak', text, options) as Promise<{ success: boolean; audioBase64?: string; mimeType?: string; cached?: boolean; error?: string; errorCode?: string }>,
+    stream: (streamId: string, text: string, options: unknown, callback: (event: unknown) => void) => {
+      const listener = (_e: unknown, event: any) => {
+        if (event?.streamId === streamId) callback(event)
+      }
+      ipcRenderer.on('tts:streamEvent', listener)
+      return (ipcRenderer.invoke('tts:stream', streamId, text, options) as Promise<unknown>)
+        .finally(() => ipcRenderer.removeListener('tts:streamEvent', listener))
+    },
+    cancelStream: (streamId: string) => ipcRenderer.invoke('tts:streamCancel', streamId) as Promise<{ success: boolean }>,
+  },
+
+  // AI 作图 —— AI 助手 generate_image 工具
+  imageGen: {
+    getConfig: () => ipcRenderer.invoke('imageGen:getConfig') as Promise<{ success: boolean; config?: unknown; available?: boolean; error?: string }>,
+    setConfig: (patch: unknown) => ipcRenderer.invoke('imageGen:setConfig', patch) as Promise<{ success: boolean; config?: unknown; error?: string }>,
+    test: (cfg: unknown) => ipcRenderer.invoke('imageGen:test', cfg) as Promise<{ success: boolean; filePath?: string; mimeType?: string; error?: string }>,
   },
 
   // 数据库操作
@@ -219,8 +412,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       minimumSupportedVersion?: string
       reason?: 'minimum-version' | 'blocked-version'
       checkedAt: number
-      updateSource: 'github' | 'custom' | 'none'
-      policySource: 'github' | 'custom' | 'none'
+      updateSource: 'r2' | 'github' | 'custom' | 'none'
+      policySource: 'r2' | 'github' | 'custom' | 'none'
     }) => void) => {
       ipcRenderer.on('app:updateAvailable', (_, info) => callback(info))
       return () => ipcRenderer.removeAllListeners('app:updateAvailable')
@@ -241,6 +434,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     close: () => ipcRenderer.send('window:close'),
     openChatWindow: () => ipcRenderer.invoke('window:openChatWindow'),
     openMomentsWindow: (filterUsername?: string) => ipcRenderer.invoke('window:openMomentsWindow', filterUsername),
+    openPersonaChatWindow: (sessionId: string) => ipcRenderer.invoke('window:openPersonaChatWindow', sessionId),
     onMomentsFilterUser: (callback: (username: string) => void) => {
       ipcRenderer.on('moments:filterUser', (_, username) => callback(username))
       return () => ipcRenderer.removeAllListeners('moments:filterUser')
@@ -251,7 +445,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     completeWelcome: () => ipcRenderer.invoke('window:completeWelcome'),
     isChatWindowOpen: () => ipcRenderer.invoke('window:isChatWindowOpen'),
     closeChatWindow: () => ipcRenderer.invoke('window:closeChatWindow'),
-    setTitleBarOverlay: (options: { symbolColor: string }) => ipcRenderer.send('window:setTitleBarOverlay', options),
+    setTitleBarOverlay: (options: { hidden?: boolean; symbolColor?: string }) => ipcRenderer.send('window:setTitleBarOverlay', options),
     openImageViewerWindow: (
       imagePath: string,
       liveVideoPath?: string,
@@ -417,7 +611,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chat: {
     connect: () => ipcRenderer.invoke('chat:connect'),
     getSessions: (offset?: number, limit?: number) => ipcRenderer.invoke('chat:getSessions', offset, limit),
-    getMentionTargets: (offset?: number, limit?: number) => ipcRenderer.invoke('chat:getMentionTargets', offset, limit),
+    getMentionTargets: (offset?: number, limit?: number, keyword?: string) => ipcRenderer.invoke('chat:getMentionTargets', offset, limit, keyword),
     getContacts: () => ipcRenderer.invoke('chat:getContacts'),
     getMessages: (sessionId: string, offset?: number, limit?: number) =>
       ipcRenderer.invoke('chat:getMessages', sessionId, offset, limit),
@@ -502,6 +696,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('export:exportContacts', outputDir, options),
     exportMoments: (outputDir: string, options: any) =>
       ipcRenderer.invoke('export:exportMoments', outputDir, options),
+    scanDatabases: () =>
+      ipcRenderer.invoke('export:scanDatabases'),
+    exportDatabases: (selectedPaths: string[], outputDir: string) =>
+      ipcRenderer.invoke('export:exportDatabases', selectedPaths, outputDir),
     onProgress: (callback: (data: any) => void) => {
       ipcRenderer.on('export:progress', (_, data) => callback(data))
       return () => ipcRenderer.removeAllListeners('export:progress')

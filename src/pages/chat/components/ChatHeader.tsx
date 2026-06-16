@@ -1,4 +1,4 @@
-import { Aperture, Image as ImageIcon, Info, Loader2, Mic, RefreshCw, Sparkles } from 'lucide-react'
+import { Aperture, Bell, BellOff, Bot, Download, Image as ImageIcon, Info, Loader2, Mic, RefreshCw, Sparkles } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Drawer, Tooltip } from '@heroui/react'
 import { DateJumpPicker } from './DateJumpPicker'
@@ -96,6 +96,8 @@ interface ChatHeaderProps {
   isBatchTranscribing: boolean
   batchTranscribeProgress: Progress
   onBatchTranscribe: () => void | Promise<void>
+  isExportingVoiceSample: boolean
+  onExportVoiceCloneSample: () => void | Promise<void>
   isBatchDecrypting: boolean
   batchDecryptProgress: Progress
   onBatchDecrypt: () => void | Promise<void>
@@ -115,6 +117,8 @@ export function ChatHeader({
   isBatchTranscribing,
   batchTranscribeProgress,
   onBatchTranscribe,
+  isExportingVoiceSample,
+  onExportVoiceCloneSample,
   isBatchDecrypting,
   batchDecryptProgress,
   onBatchDecrypt
@@ -126,6 +130,7 @@ export function ChatHeader({
   const [vecProgress, setVecProgress] = useState<EmbeddingBuildProgress | null>(null)
   const [vecStore, setVecStore] = useState<EmbeddingVectorStoreInfo | null>(null)
   const [isDetailOpen, setIsDetailOpen] = useState(false)
+  const [notifyEnabled, setNotifyEnabled] = useState(false)
   const [contactNickName, setContactNickName] = useState('')
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null)
   const [sessionDetailLoading, setSessionDetailLoading] = useState(false)
@@ -166,6 +171,28 @@ export function ChatHeader({
       })
 
     return () => { cancelled = true }
+  }, [currentSession.username])
+
+  // 消息提醒开关：回显当前会话是否开启，并随 config 变更同步
+  useEffect(() => {
+    let cancelled = false
+    void window.electronAPI.notify.getEnabledSessions().then((list) => {
+      if (!cancelled) setNotifyEnabled(list.includes(currentSession.username))
+    })
+    const off = window.electronAPI.config.onChanged(({ key, value }) => {
+      if (key === 'notifySessions' && Array.isArray(value)) {
+        setNotifyEnabled((value as string[]).includes(currentSession.username))
+      }
+    })
+    return () => { cancelled = true; off() }
+  }, [currentSession.username])
+
+  const handleToggleNotify = useCallback(() => {
+    setNotifyEnabled((prev) => {
+      const next = !prev
+      void window.electronAPI.notify.setSessionEnabled(currentSession.username, next)
+      return next
+    })
   }, [currentSession.username])
 
   const syncDetailDrawerBounds = useCallback(() => {
@@ -271,6 +298,11 @@ export function ChatHeader({
       ]
     : []
   const sessionDisplayName = contactNickName || currentSession.username
+  // 仅私聊可开消息提醒（排除群聊/公众号）
+  const isPrivateSession = !isGroupChat(currentSession.username)
+    && !currentSession.username.startsWith('gh_')
+    && !currentSession.isOfficialAccount
+    && !currentSession.isOfficialFolder
   const lastActivity = currentSession.lastTimestamp || currentSession.sortTimestamp
   const summary = currentSession.summary?.split('\n')[0]?.trim() || '暂无消息'
   const messageTables = sessionDetail?.messageTables ?? []
@@ -396,7 +428,7 @@ export function ChatHeader({
               <RefreshCw size={18} className={isRefreshingMessages || isUpdating ? 'animate-spin' : ''} />
             </Button>
           </Tooltip.Trigger>
-          <Tooltip.Content>刷新消息</Tooltip.Content>
+          <Tooltip.Content placement="bottom">刷新消息</Tooltip.Content>
         </Tooltip>
 
         <Tooltip delay={0}>
@@ -414,7 +446,7 @@ export function ChatHeader({
                 : <Sparkles size={18} className={vecStatus && vecStatus.count > 0 ? 'text-primary' : ''} />}
             </Button>
           </Tooltip.Trigger>
-          <Tooltip.Content className="max-w-96">
+          <Tooltip.Content className="max-w-96" placement="bottom">
             <div className="space-y-1">
               <div>{vecTooltip}</div>
               {vectorEvidenceRows.length > 0 && (
@@ -430,6 +462,58 @@ export function ChatHeader({
           </Tooltip.Content>
         </Tooltip>
 
+        {isPrivateSession && (
+          <Tooltip delay={0}>
+            <Tooltip.Trigger>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                aria-label={notifyEnabled ? '关闭新消息提醒' : '开启新消息提醒'}
+                onPress={handleToggleNotify}
+              >
+                {notifyEnabled ? <Bell size={18} className="text-primary" /> : <BellOff size={18} />}
+              </Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content placement="bottom">{notifyEnabled ? '新消息提醒已开启 · 点击关闭' : '开启新消息提醒（桌宠气泡）'}</Tooltip.Content>
+          </Tooltip>
+        )}
+
+        {isPrivateSession && (
+          <Tooltip delay={0}>
+            <Tooltip.Trigger>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                aria-label="克隆好友"
+                onPress={() => window.electronAPI.window.openPersonaChatWindow(currentSession.username)}
+              >
+                <Bot size={18} />
+              </Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content placement="bottom">克隆好友（和 TA 的数字分身聊天）</Tooltip.Content>
+          </Tooltip>
+        )}
+
+        {isPrivateSession && (
+          <Tooltip delay={0}>
+            <Tooltip.Trigger>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                aria-label="导出复刻语音样本"
+                onPress={onExportVoiceCloneSample}
+                isDisabled={isExportingVoiceSample || !currentSessionId}
+              >
+                {isExportingVoiceSample ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
+              </Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content placement="bottom">{isExportingVoiceSample ? '正在导出复刻语音样本' : '导出复刻语音样本（至少 10 秒）'}</Tooltip.Content>
+          </Tooltip>
+        )}
+
         {!isGroupChat(currentSession.username) && (
           <Tooltip delay={0}>
             <Tooltip.Trigger>
@@ -443,7 +527,7 @@ export function ChatHeader({
                 <Aperture size={18} />
               </Button>
             </Tooltip.Trigger>
-            <Tooltip.Content>查看朋友圈</Tooltip.Content>
+            <Tooltip.Content placement="bottom">查看朋友圈</Tooltip.Content>
           </Tooltip>
         )}
 
@@ -468,7 +552,7 @@ export function ChatHeader({
               {isBatchTranscribing ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
             </Button>
           </Tooltip.Trigger>
-          <Tooltip.Content>
+          <Tooltip.Content placement="bottom">
             {isBatchTranscribing ? `批量转写中 (${batchTranscribeProgress.current}/${batchTranscribeProgress.total})` : '批量语音转文字'}
           </Tooltip.Content>
         </Tooltip>
@@ -486,7 +570,7 @@ export function ChatHeader({
               {isBatchDecrypting ? <Loader2 size={18} className="animate-spin" /> : <ImageIcon size={18} />}
             </Button>
           </Tooltip.Trigger>
-          <Tooltip.Content>
+          <Tooltip.Content placement="bottom">
             {isBatchDecrypting ? `批量解密中 (${batchDecryptProgress.current}/${batchDecryptProgress.total})` : '批量解密图片'}
           </Tooltip.Content>
         </Tooltip>
@@ -503,7 +587,7 @@ export function ChatHeader({
               <Info size={18} />
             </Button>
           </Tooltip.Trigger>
-          <Tooltip.Content>会话详情</Tooltip.Content>
+          <Tooltip.Content placement="bottom">会话详情</Tooltip.Content>
         </Tooltip>
       </div>
 

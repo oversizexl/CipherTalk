@@ -19,7 +19,39 @@ const DEFAULT_TOOL_TIMEOUT_MS = 60_000
 const TOOL_TIMEOUT_OVERRIDES: Record<string, number> = {
   semantic_search: 240_000,
   search_messages: 240_000,
-  delegate_analysis: 360_000, // 子 Agent 整轮（多步 + 可能触发首次重建），给更长上限
+  delegate_analysis: 600_000, // 子 Agent 批量整轮（最多 4 个并发子任务 + 可能触发首次重建），给更长上限
+  search_stickers: 240_000, // 首次构建表情包词典可能触发最近会话补建索引
+  send_random_image: 240_000, // 同上 + 图片解密
+  generate_image: 3_600_000, // 慢速作图模型经常超过 1 分钟，跟作图服务默认超时保持一致
+  export_chat: 3_600_000, // 导出可能包含媒体复制/解密，交给独立导出进程长跑
+  index_local_files: 600_000,
+  search_local_files: 300_000,
+  find_files: 120_000,
+  add_knowledge_source: 300_000,
+  search_knowledge: 120_000,
+  remove_knowledge_source: 120_000,
+  create_artifact: 300_000,
+  create_task: 120_000,
+  list_tasks: 120_000,
+  update_task: 120_000,
+  cancel_task: 120_000,
+  run_task_now: 120_000,
+  list_audit_logs: 120_000,
+  rollback_operation: 300_000,
+  desktop_screenshot: 120_000,
+  desktop_ocr: 120_000,
+  audit_memories: 120_000,
+  apply_memory_fix: 300_000,
+  code_read_file: 120_000,
+  code_list_files: 120_000,
+  code_workspace_status: 120_000,
+  code_replace_in_file: 600_000, // 可能等待用户审批
+  code_write_file: 600_000,
+  code_delete_file: 600_000,
+  code_run_command: 600_000,
+  code_start_dev_server: 600_000,
+  code_stop_dev_server: 120_000,
+  code_get_dev_server_logs: 120_000,
 }
 
 function stepFingerprint(step: StepResult<ToolSet>): string | null {

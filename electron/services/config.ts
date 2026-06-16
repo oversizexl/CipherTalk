@@ -22,6 +22,9 @@ const ACCOUNT_CONFIG_CLEAR_KEYS = [
   'imageAesKey'
 ] as const
 
+const IMAGE_GEN_DEFAULT_TIMEOUT_MS = 3_600_000
+const IMAGE_GEN_LEGACY_DEFAULT_TIMEOUT_MS = 600_000
+
 interface ConfigSchema {
   // 数据库相关
   dbPath: string
@@ -51,9 +54,11 @@ interface ConfigSchema {
   themeMode: string
   language: string
   releaseAnnouncementVersion: string
+  releaseAnnouncementId: string
   releaseAnnouncementBody: string
   releaseAnnouncementNotes: string
   releaseAnnouncementSeenVersion: string
+  releaseAnnouncementSeenId: string
   homeBackgroundSource: 'preset' | 'custom'
   homeBackgroundPreset: 'beijing' | 'beijing2'
   homeBackgroundCustomType: 'image' | 'video' | ''
@@ -100,6 +105,10 @@ interface ConfigSchema {
   // 窗口关闭行为
   closeToTray: boolean
 
+  // 日记相关
+  diarySummaryHour: number
+  diaryCustomPrompt: string
+
   // 性能相关
   hardwareAccelerationEnabled: boolean
 
@@ -120,6 +129,8 @@ interface ConfigSchema {
       updatedAt: number
     }
   }
+  agentCodeWorkspaceRoot: string
+  agentCodeWorkspaceApprovalPolicy: 'on-request' | 'risk-based' | 'full-access'
   // 嵌入模型（语义/向量检索，独立于聊天模型）
   embeddingConfig: {
     enabled: boolean
@@ -140,8 +151,84 @@ interface ConfigSchema {
     model: string
     timeoutMs: number
   }
+  // 联网搜索（Tavily）—— AI Agent 的 web_search 工具用，独立于聊天/嵌入模型
+  webSearchConfig: {
+    enabled: boolean
+    apiKey: string
+    maxResults: number
+  }
+  // 文字转语音 —— 朗读 AI 回复/微信消息/角色语音回复，独立于聊天模型
+  // providers 持久化各服务商独立配置，切换服务商不会互相覆盖。
+  ttsConfig: {
+    enabled: boolean
+    activeProvider: 'xiaomi' | 'volcengine' | 'aliyun-qwen'
+    protocol: 'xiaomi-mimo-tts' | 'volcengine-bidirectional' | 'aliyun-qwen-realtime'
+    apiKey: string
+    baseURL: string
+    model: string
+    voice: string
+    instructions: string
+    speed: number
+    providers: {
+      xiaomi: {
+        protocol: 'xiaomi-mimo-tts' | 'volcengine-bidirectional' | 'aliyun-qwen-realtime'
+        apiKey: string
+        baseURL: string
+        model: string
+        voice: string
+        instructions: string
+        speed: number
+      }
+      volcengine: {
+        protocol: 'xiaomi-mimo-tts' | 'volcengine-bidirectional' | 'aliyun-qwen-realtime'
+        apiKey: string
+        baseURL: string
+        model: string
+        voice: string
+        instructions: string
+        speed: number
+      }
+      'aliyun-qwen': {
+        protocol: 'xiaomi-mimo-tts' | 'volcengine-bidirectional' | 'aliyun-qwen-realtime'
+        apiKey: string
+        baseURL: string
+        model: string
+        voice: string
+        instructions: string
+        speed: number
+      }
+    }
+  }
+  // AI 作图 —— AI 助手 generate_image 工具用，独立于聊天模型
+  imageGenConfig: {
+    enabled: boolean
+    protocol: 'openai-compatible' | 'openai' | 'google' | 'custom'
+    apiKey: string
+    baseURL: string
+    model: string
+    size: string
+    timeoutMs: number
+  }
   // 主进程探测到的系统代理 URL（写入后供 AI 子进程/嵌入跨进程读取；子进程无 session API 探测不了）
   aiResolvedProxyUrl: string
+  // AI 宠物（petdex 宠物包格式，用户宠物包存放在 cachePath/pets/<slug>/）
+  petCurrent: string         // 当前宠物 slug，空 = 不展示
+  petDesktopEnabled: boolean  // 桌面悬浮桌宠开关
+  petDefaultInitialized: boolean // 是否已执行过内置默认宠物初始化
+  petPersonaSessionId: string // 桌宠快捷对话绑定的数字分身 sessionId，空 = AI 助手
+  petTtsEnabled: boolean // 桌宠气泡/快捷对话是否朗读
+  petDailySummaryEnabled: boolean // 桌宠每日摘要播报开关
+  petDailySummaryDate: string // 最近一次每日摘要日期 YYYY-MM-DD
+  petReminders: Array<{
+    id: string
+    text: string
+    kind: 'once' | 'daily' | 'yearly'
+    date?: string
+    time: string
+    lastFired?: string
+  }>
+  // 消息提醒：开启了"新消息提醒"的私聊会话用户名列表（默认全关，空数组）
+  notifySessions: string[]
   mcpEnabled: boolean
   mcpExposeMediaPaths: boolean
   mcpProxyPort: number
@@ -166,9 +253,11 @@ const defaults: ConfigSchema = {
   themeMode: 'light',
   language: 'zh-CN',
   releaseAnnouncementVersion: '',
+  releaseAnnouncementId: '',
   releaseAnnouncementBody: '',
   releaseAnnouncementNotes: '',
   releaseAnnouncementSeenVersion: '',
+  releaseAnnouncementSeenId: '',
   homeBackgroundSource: 'preset',
   homeBackgroundPreset: 'beijing',
   homeBackgroundCustomType: '',
@@ -199,12 +288,16 @@ const defaults: ConfigSchema = {
   httpApiToken: '',
   httpApiListenMode: 'localhost',
   closeToTray: true,  // 默认最小化到托盘
+  diarySummaryHour: 2,
+  diaryCustomPrompt: '',
   hardwareAccelerationEnabled: true,
   // AI 默认配置
   aiCurrentProvider: 'deepseek',
   aiActiveConfigPresetId: '',
   aiProviderConfigs: {},  // 空对象，用户配置后填充
   aiProviderModelCache: {},
+  agentCodeWorkspaceRoot: '',
+  agentCodeWorkspaceApprovalPolicy: 'on-request',
   embeddingConfig: {
     enabled: false,
     provider: '',
@@ -223,7 +316,70 @@ const defaults: ConfigSchema = {
     model: 'BAAI/bge-reranker-v2-m3',
     timeoutMs: 15000,
   },
+  webSearchConfig: {
+    enabled: false,
+    apiKey: '',
+    maxResults: 5,
+  },
+  ttsConfig: {
+    enabled: false,
+    activeProvider: 'xiaomi',
+    protocol: 'xiaomi-mimo-tts',
+    apiKey: '',
+    baseURL: 'https://api.xiaomimimo.com/v1',
+    model: 'mimo-v2.5-tts',
+    voice: 'mimo_default',
+    instructions: '',
+    speed: 1,
+    providers: {
+      xiaomi: {
+        protocol: 'xiaomi-mimo-tts',
+        apiKey: '',
+        baseURL: 'https://api.xiaomimimo.com/v1',
+        model: 'mimo-v2.5-tts',
+        voice: 'mimo_default',
+        instructions: '',
+        speed: 1,
+      },
+      volcengine: {
+        protocol: 'volcengine-bidirectional',
+        apiKey: '',
+        baseURL: 'wss://openspeech.bytedance.com/api/v3/tts/bidirection',
+        model: 'seed-tts-2.0',
+        voice: 'zh_female_shuangkuaisisi_uranus_bigtts',
+        instructions: '',
+        speed: 1,
+      },
+      'aliyun-qwen': {
+        protocol: 'aliyun-qwen-realtime',
+        apiKey: '',
+        baseURL: 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
+        model: 'qwen3-tts-instruct-flash-realtime',
+        voice: 'Cherry',
+        instructions: '',
+        speed: 1,
+      },
+    },
+  },
+  imageGenConfig: {
+    enabled: false,
+    protocol: 'openai-compatible',
+    apiKey: '',
+    baseURL: 'https://api.siliconflow.cn/v1',
+    model: 'Kwai-Kolors/Kolors',
+    size: '1024x1024',
+    timeoutMs: IMAGE_GEN_DEFAULT_TIMEOUT_MS,
+  },
   aiResolvedProxyUrl: '',
+  petCurrent: '',
+  petDesktopEnabled: true,
+  petDefaultInitialized: false,
+  petPersonaSessionId: '',
+  petTtsEnabled: false,
+  petDailySummaryEnabled: true,
+  petDailySummaryDate: '',
+  petReminders: [],
+  notifySessions: [],
   mcpEnabled: false,
   mcpExposeMediaPaths: true,
   mcpProxyPort: 5032,
@@ -279,6 +435,23 @@ export class ConfigService {
       }
 
       this.migrateLegacySingleAccount()
+
+      // 迁移：作图旧默认超时 10 分钟过短，后台图已生成时 Agent 工具可能先报超时。
+      try {
+        const row = this.db.prepare("SELECT value FROM config WHERE key = 'imageGenConfig'").get() as { value: string } | undefined
+        if (row) {
+          const cfg = JSON.parse(row.value || '{}') as { timeoutMs?: unknown }
+          if (Number(cfg?.timeoutMs) === IMAGE_GEN_LEGACY_DEFAULT_TIMEOUT_MS) {
+            this.db.prepare("UPDATE config SET value = ? WHERE key = 'imageGenConfig'").run(JSON.stringify({
+              ...cfg,
+              timeoutMs: IMAGE_GEN_DEFAULT_TIMEOUT_MS,
+            }))
+            console.log('[Config] AI 作图默认超时已迁移到 1 小时')
+          }
+        }
+      } catch (e) {
+        console.error('迁移 AI 作图超时配置失败:', e)
+      }
 
       // 迁移：修复旧版本产生的空 STT 语言配置，默认为中文
       try {

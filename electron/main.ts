@@ -20,7 +20,9 @@ import {
   checkForUpdatesOnStartup,
   startBackgroundSync,
   startLocalIntegrationServices,
-  stopLocalIntegrationServices
+  startNightlyMemoryConsolidation,
+  stopLocalIntegrationServices,
+  warmupAgentProcess
 } from './main/startup'
 
 type AppWithQuitFlag = typeof app & {
@@ -252,6 +254,11 @@ if (gotSingleInstanceLock) {
       markStartupMilestone('startup:tray-create-start')
       ctx.getWindowManager().createTray()
       markStartupMilestone('startup:tray-create-done')
+
+      // 上次开着桌宠就跟着一起唤出
+      if (configService?.get('petDesktopEnabled') && configService.get('petCurrent')) {
+        ctx.getWindowManager().openPetWindow()
+      }
     }
 
     // 启动后台同步放在窗口编排之后，避免启动连接数据库时抢占磁盘 IO。
@@ -265,8 +272,19 @@ if (gotSingleInstanceLock) {
     // 启动时检测更新
     checkForUpdatesOnStartup(ctx)
 
+    // 后台预热 AI Agent 子进程，消除首次提问的冷启动等待
+    warmupAgentProcess(ctx)
+
+    // 独立夜间记忆整理：无对话也会在应用运行时按小时检查一次。
+    startNightlyMemoryConsolidation(ctx)
+
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
+      const mainWindow = ctx.getMainWindow()
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.show()
+        mainWindow.focus()
+      } else {
         ctx.getWindowManager().createMainWindow()
         ctx.getWindowManager().createTray()
       }

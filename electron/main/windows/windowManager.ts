@@ -4,9 +4,11 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
+  screen,
   Tray,
   type BrowserWindowConstructorOptions
 } from 'electron'
+import { createHash } from 'crypto'
 import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { autoUpdater } from 'electron-updater'
@@ -33,6 +35,22 @@ function getReleaseAnnouncementPath(): string {
     : join(process.resourcesPath, 'release-announcement.json')
 }
 
+function buildReleaseAnnouncementId(payload: ReleaseAnnouncementPayload, releaseBody: string, releaseNotes: string): string {
+  const version = String(payload.version || '').trim()
+  const generatedAt = String(payload.generatedAt || '').trim()
+  if (generatedAt) return `${version}:${generatedAt}`
+
+  const contentHash = createHash('sha256')
+    .update(version)
+    .update('\n')
+    .update(releaseBody)
+    .update('\n')
+    .update(releaseNotes)
+    .digest('hex')
+    .slice(0, 16)
+  return `${version}:${contentHash}`
+}
+
 function syncPackagedReleaseAnnouncement(ctx: MainProcessContext) {
   const configService = ctx.getConfigService()
   if (!configService) return
@@ -50,13 +68,16 @@ function syncPackagedReleaseAnnouncement(ctx: MainProcessContext) {
 
     const releaseBody = String(payload.releaseBody || '').trim()
     const releaseNotes = String(payload.releaseNotes || '').trim()
+    const announcementId = buildReleaseAnnouncementId(payload, releaseBody, releaseNotes)
 
     const storedVersion = configService.get('releaseAnnouncementVersion')
+    const storedId = configService.get('releaseAnnouncementId')
     const storedBody = configService.get('releaseAnnouncementBody')
     const storedNotes = configService.get('releaseAnnouncementNotes')
 
     if (
       storedVersion === version &&
+      storedId === announcementId &&
       storedBody === releaseBody &&
       storedNotes === releaseNotes
     ) {
@@ -64,6 +85,7 @@ function syncPackagedReleaseAnnouncement(ctx: MainProcessContext) {
     }
 
     configService.set('releaseAnnouncementVersion', version)
+    configService.set('releaseAnnouncementId', announcementId)
     configService.set('releaseAnnouncementBody', releaseBody)
     configService.set('releaseAnnouncementNotes', releaseNotes)
     ctx.getLogService()?.info('ReleaseAnnouncement', '已同步本地版本公告', {
@@ -221,6 +243,61 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
   let purchaseWindow: BrowserWindow | null = null
   let welcomeWindow: BrowserWindow | null = null
   let chatHistoryWindow: BrowserWindow | null = null
+  let personaChatWindow: BrowserWindow | null = null
+  let petWindow: BrowserWindow | null = null
+  let petBaseBounds: { x: number; y: number; width: number; height: number } | null = null
+  // 桌宠基础尺寸（与 openPetWindow 一致）；显示消息气泡时临时向上/左扩窗腾出空间
+  const PET_BASE_WIDTH = 150
+  const PET_BASE_HEIGHT = 170
+  const PET_BUBBLE_WIDTH = 300
+  const PET_BUBBLE_HEIGHT = 320
+  let petBubbleExpanded = false
+  // 程序化 setBounds 会触发 'move'，用时间窗抑制，避免桌宠误判成拖动而播跑动画
+  let petSuppressMoveUntil = 0
+  let lastPetContextMenuAt = 0
+
+  const closePetWindowInternal = (): void => {
+    if (petWindow && !petWindow.isDestroyed()) {
+      petWindow.close()
+    }
+    petWindow = null
+    petBaseBounds = null
+    petBubbleExpanded = false
+  }
+
+  const setPetWindowMaterial = (expanded: boolean): void => {
+    if (!petWindow || petWindow.isDestroyed()) return
+    try {
+      // win32 不做 setBackgroundMaterial 切换：acrylic 切回 'none' 后透明窗口会被
+      // 合成器画成不可恢复的黑底（Electron 已知 bug），气泡观感靠 .pet-notice 自身的 CSS 玻璃态。
+      if (process.platform === 'darwin') {
+        petWindow.setVibrancy(expanded ? 'hud' : null)
+      }
+    } catch {
+      // 平台材质是通知气泡的增强项，失败时保持普通透明桌宠窗口。
+    }
+  }
+
+  const disablePetDesktopWindow = (): void => {
+    closePetWindowInternal()
+    ctx.getConfigService()?.set('petDesktopEnabled', false)
+    ctx.broadcastToWindows('config:changed', { key: 'petDesktopEnabled', value: false })
+  }
+
+  const showPetContextMenu = (): void => {
+    if (!petWindow || petWindow.isDestroyed()) return
+    const now = Date.now()
+    if (now - lastPetContextMenuAt < 150) return
+    lastPetContextMenuAt = now
+    petWindow.webContents.send('pet:contextMenuOpened')
+    const menu = Menu.buildFromTemplate([
+      {
+        label: '退出宠物',
+        click: disablePetDesktopWindow
+      }
+    ])
+    menu.popup({ window: petWindow })
+  }
 
   const createTray = (): Tray | null => {
     const existingTray = ctx.getTray()
@@ -595,6 +672,66 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       return chatHistoryWindow
     },
 
+    // 克隆好友（数字分身）独立聊天窗口：手机聊天软件比例的窄窗
+    openPersonaChatWindow(sessionId: string) {
+      const hash = `/persona-chat/${encodeURIComponent(sessionId)}`
+      if (personaChatWindow && !personaChatWindow.isDestroyed()) {
+        if (personaChatWindow.isMinimized()) personaChatWindow.restore()
+        personaChatWindow.focus()
+        if (process.env.VITE_DEV_SERVER_URL) {
+          personaChatWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}?${getThemeQueryParams(ctx)}#${hash}`)
+        } else {
+          personaChatWindow.loadFile(join(__dirname, '../dist/index.html'), {
+            hash,
+            query: getThemeQuery(ctx)
+          })
+        }
+        return personaChatWindow
+      }
+
+      const isDark = nativeTheme.shouldUseDarkColors
+      personaChatWindow = new BrowserWindow({
+        width: 420,
+        height: 760,
+        minWidth: 360,
+        minHeight: 560,
+        ...getWindowIconOptions(ctx),
+        webPreferences: {
+          preload: join(__dirname, 'preload.js'),
+          devTools: ctx.allowDevTools,
+          contextIsolation: true,
+          nodeIntegration: false,
+          webSecurity: false
+        },
+        titleBarStyle: 'hidden',
+        titleBarOverlay: {
+          color: '#00000000',
+          symbolColor: isDark ? '#ffffff' : '#1a1a1a',
+          height: 40
+        },
+        show: false,
+        backgroundColor: isDark ? '#1A1A1A' : '#F0F0F0',
+        autoHideMenuBar: true
+      })
+
+      personaChatWindow.once('ready-to-show', () => personaChatWindow?.show())
+
+      if (process.env.VITE_DEV_SERVER_URL) {
+        personaChatWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}?${getThemeQueryParams(ctx)}#${hash}`)
+        setupDevToolsShortcut(personaChatWindow, () => personaChatWindow)
+      } else {
+        personaChatWindow.loadFile(join(__dirname, '../dist/index.html'), {
+          hash,
+          query: getThemeQuery(ctx)
+        })
+      }
+
+      personaChatWindow.on('closed', () => {
+        personaChatWindow = null
+      })
+      return personaChatWindow
+    },
+
     openAgreementWindow() {
       if (agreementWindow && !agreementWindow.isDestroyed()) {
         agreementWindow.focus()
@@ -639,14 +776,20 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         return welcomeWindow
       }
 
+      const isDark = nativeTheme.shouldUseDarkColors
       welcomeWindow = new BrowserWindow({
         width: 1100,
         height: 760,
         minWidth: 900,
         minHeight: 640,
-        frame: true,
+        titleBarStyle: 'hidden',
+        titleBarOverlay: {
+          color: '#00000000',
+          symbolColor: isDark ? '#FFFFFF' : '#333333',
+          height: 40
+        },
         transparent: false,
-        backgroundColor: nativeTheme.shouldUseDarkColors ? '#1A1A1A' : '#FFFFFF',
+        backgroundColor: isDark ? '#1A1A1A' : '#FFFFFF',
         hasShadow: true,
         autoHideMenuBar: true,
         ...getWindowIconOptions(ctx),
@@ -886,6 +1029,126 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         chatWindow = null
       }
       return true
+    },
+
+    openPetWindow() {
+      if (petWindow && !petWindow.isDestroyed()) {
+        petWindow.show()
+        return petWindow
+      }
+
+      // 默认落在主屏右下角（任务栏上方），透明无边框，靠 CSS app-region 拖动
+      const { workArea } = screen.getPrimaryDisplay()
+      const width = 150
+      const height = 170
+      petWindow = new BrowserWindow({
+        width,
+        height,
+        x: workArea.x + workArea.width - width - 24,
+        y: workArea.y + workArea.height - height - 16,
+        frame: false,
+        transparent: true,
+        resizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        hasShadow: false,
+        show: false,
+        webPreferences: {
+          preload: join(__dirname, 'preload.js'),
+          devTools: ctx.allowDevTools,
+          contextIsolation: true,
+          nodeIntegration: false,
+          webSecurity: false
+        }
+      })
+
+      petWindow.setAlwaysOnTop(true, 'screen-saver')
+      petWindow.once('ready-to-show', () => petWindow?.show())
+      loadWindowRoute(ctx, petWindow, '/pet-window')
+
+      petWindow.on('system-context-menu', (event) => {
+        event.preventDefault()
+        showPetContextMenu()
+      })
+
+      petWindow.webContents.on('context-menu', (event) => {
+        event.preventDefault()
+        showPetContextMenu()
+      })
+
+      // 拖动时把窗口横坐标转发给渲染端，宠物按移动方向播跑/跳动画
+      petWindow.on('move', () => {
+        if (!petWindow || petWindow.isDestroyed()) return
+        if (Date.now() < petSuppressMoveUntil) return // 程序化扩窗，非用户拖动
+        petWindow.webContents.send('pet:windowMove', petWindow.getPosition()[0])
+      })
+
+      petWindow.on('closed', () => {
+        petWindow = null
+      })
+      return petWindow
+    },
+
+    closePetWindow() {
+      closePetWindowInternal()
+    },
+
+    isPetWindowOpen() {
+      return petWindow !== null && !petWindow.isDestroyed()
+    },
+
+    showPetContextMenu() {
+      showPetContextMenu()
+    },
+
+    // 显示消息气泡时向右下角锚点扩窗腾出气泡空间，气泡消失后还原。仅尺寸变化，桌宠仍停在原处。
+    setPetBubbleExpanded(expanded: boolean) {
+      if (!petWindow || petWindow.isDestroyed()) return
+      if (expanded === petBubbleExpanded) return
+      petBubbleExpanded = expanded
+
+      const b = petWindow.getBounds()
+      const display = screen.getDisplayMatching(b)
+      const { workArea } = display
+      if (expanded) {
+        petBaseBounds = { x: b.x, y: b.y, width: PET_BASE_WIDTH, height: PET_BASE_HEIGHT }
+      }
+      setPetWindowMaterial(expanded)
+      const base = petBaseBounds ?? { x: b.x, y: b.y, width: PET_BASE_WIDTH, height: PET_BASE_HEIGHT }
+      const baseX = base.x
+      const baseY = base.y
+      const baseRight = baseX + PET_BASE_WIDTH
+      const baseBottom = baseY + PET_BASE_HEIGHT
+      const width = expanded ? PET_BUBBLE_WIDTH : PET_BASE_WIDTH
+      const height = expanded ? PET_BUBBLE_HEIGHT : PET_BASE_HEIGHT
+      const minX = workArea.x
+      const minY = workArea.y
+      const maxX = Math.max(minX, workArea.x + workArea.width - width)
+      const maxY = Math.max(minY, workArea.y + workArea.height - height)
+      const preferredX = expanded ? baseRight - width : baseX
+      const preferredY = expanded ? baseBottom - height : baseY
+      const x = Math.min(Math.max(preferredX, minX), maxX)
+      const y = Math.min(Math.max(preferredY, minY), maxY)
+
+      petSuppressMoveUntil = Date.now() + 400
+      petWindow.setBounds({
+        x,
+        y,
+        width,
+        height,
+      })
+      petWindow.webContents.send('pet:bubbleFrame', {
+        expanded,
+        baseLeft: baseX - x,
+        baseTop: baseY - y,
+        baseWidth: PET_BASE_WIDTH,
+        baseHeight: PET_BASE_HEIGHT,
+      })
+      if (!expanded) {
+        petBaseBounds = null
+      }
     }
   }
 

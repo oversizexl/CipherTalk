@@ -3,6 +3,7 @@ import { ConfigService } from '../services/config'
 import { appUpdateService } from '../services/appUpdateService'
 import { chatService } from '../services/chatService'
 import { httpApiService } from '../services/httpApiService'
+import { nightlyMemoryService } from '../services/memory/nightlyMemoryService'
 import { getMcpProxyConfig } from '../services/mcp/runtime'
 import { mcpProxyService } from '../services/mcp/proxyService'
 import { mcpClientService } from '../services/mcpClientService'
@@ -135,18 +136,45 @@ export async function checkAndConnectOnStartup(ctx: MainProcessContext): Promise
 }
 
 /**
+ * 预热 AI Agent utility 子进程：提前 fork 并加载庞大的 ai/@ai-sdk 依赖图，
+ * 把冷启动成本从"用户首次提问"挪到启动后的空闲时段。子进程常驻，预热一次即可。
+ */
+export function warmupAgentProcess(ctx: MainProcessContext): void {
+  const configService = ensureConfigService(ctx)
+  // 未配置（停留在引导页）时不预热，避免拉起用不到的子进程。
+  if (!String(configService.get('myWxid') || '').trim()) {
+    markStartupMilestone('startup:agent-warmup-skip-unconfigured')
+    return
+  }
+  // 延后到启动关键路径之后，避免和数据库连接/首屏抢 CPU 与磁盘 IO。
+  setTimeout(() => {
+    void (async () => {
+      try {
+        markStartupMilestone('startup:agent-warmup-start')
+        const { agentProcessService } = await import('../services/agent/agentProcessService')
+        agentProcessService.setLogger(ctx.getLogService())
+        const startedAt = Date.now()
+        await agentProcessService.ping()
+        // 顺带预热首条消息的准备链路：主进程 ai 模块加载 + 系统代理探测，免得用户首问时才付这两笔
+        const [{ refreshResolvedProxyUrl }] = await Promise.all([
+          import('../services/ai/proxyFetch'),
+          import('ai'),
+        ])
+        await refreshResolvedProxyUrl()
+        markStartupMilestone('startup:agent-warmup-done', { elapsedMs: Date.now() - startedAt })
+      } catch (e) {
+        warnStartupMilestone('startup:agent-warmup-failed', { error: (e as Error)?.message || String(e) })
+      }
+    })()
+  }, 4000)
+}
+
+/**
  * 启动时自动检测应用更新。
  * 只在生产环境触发，结果沿用 app:updateAvailable 推送给主窗口。
  */
 export function checkForUpdatesOnStartup(ctx: MainProcessContext): void {
   if (process.env.VITE_DEV_SERVER_URL) {
-    // 开发模式：推送一条模拟的更新通知，便于本地测试更新提示 UI（不会真实下载/安装）
-    setTimeout(() => {
-      const mainWindow = ctx.getMainWindow()
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('app:updateAvailable', appUpdateService.createSimulatedUpdateInfo())
-      }
-    }, 3000)
     return
   }
 
@@ -289,6 +317,7 @@ export async function startLocalIntegrationServices(ctx: MainProcessContext): Pr
 }
 
 export function stopLocalIntegrationServices(): void {
+  nightlyMemoryService.stop()
   httpApiService.stop().catch((e) => {
     console.error('[HttpApi] 停止失败:', e)
   })
@@ -298,4 +327,8 @@ export function stopLocalIntegrationServices(): void {
   mcpClientService.disconnectAll(false).catch((e) => {
     console.error('[McpClient] 停止失败:', e)
   })
+}
+
+export function startNightlyMemoryConsolidation(ctx: MainProcessContext): void {
+  nightlyMemoryService.init(ctx)
 }

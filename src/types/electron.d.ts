@@ -22,6 +22,77 @@ export interface RerankConfig {
   timeoutMs: number
 }
 
+export interface WebSearchConfig {
+  enabled: boolean
+  apiKey: string
+  maxResults: number
+}
+
+export type TtsProviderId = 'xiaomi' | 'volcengine' | 'aliyun-qwen'
+export type TtsProtocol = 'xiaomi-mimo-tts' | 'volcengine-bidirectional' | 'aliyun-qwen-realtime'
+
+export interface TtsProviderConfig {
+  protocol: TtsProtocol
+  apiKey: string
+  baseURL: string
+  model: string
+  voice: string
+  instructions: string
+  speed: number
+}
+
+export interface TtsConfig extends TtsProviderConfig {
+  enabled: boolean
+  activeProvider: TtsProviderId
+  providers: Record<TtsProviderId, TtsProviderConfig>
+}
+
+export interface TtsSpeakResult {
+  success: boolean
+  audioBase64?: string
+  mimeType?: string
+  cached?: boolean
+  error?: string
+  errorCode?: 'NOT_CONFIGURED' | 'SYNTHESIS_FAILED'
+}
+
+export interface TtsStreamEvent {
+  streamId: string
+  type: 'start' | 'chunk' | 'complete' | 'end' | 'error'
+  success?: boolean
+  audioBase64?: string
+  mimeType?: string
+  cached?: boolean
+  streamed?: boolean
+  format?: 'pcm16'
+  sampleRate?: number
+  channels?: number
+  error?: string
+  errorCode?: 'NOT_CONFIGURED' | 'SYNTHESIS_FAILED'
+}
+
+export interface TtsStreamResult extends TtsSpeakResult {
+  streamed?: boolean
+  streamFormat?: 'pcm16'
+  sampleRate?: number
+  channels?: number
+}
+
+export interface TtsSpeakOptions {
+  config?: Partial<TtsConfig>
+  personaVoice?: PersonaTtsVoiceBindingInfo | null
+}
+
+export interface ImageGenConfig {
+  enabled: boolean
+  protocol: 'openai-compatible' | 'openai' | 'google' | 'custom'
+  apiKey: string
+  baseURL: string
+  model: string
+  size: string
+  timeoutMs: number
+}
+
 export interface EmbeddingBuildProgress {
   sessionId: string
   stage: 'loading' | 'chunking' | 'embedding' | 'done'
@@ -38,38 +109,6 @@ export interface EmbeddingVectorStoreInfo {
   updatedAtMs: number | null
   count: number
   dimensions: number[]
-}
-
-export type AgentResourceKind = 'skill' | 'mcp_tool'
-
-export interface AgentResourceBuildProgress {
-  kind: AgentResourceKind
-  stage: 'loading' | 'embedding' | 'done'
-  current: number
-  total: number
-  indexed: number
-  message: string
-}
-
-export interface AgentResourceVectorStoreInfo {
-  dbPath: string
-  exists: boolean
-  sizeBytes: number
-  updatedAtMs: number | null
-  count: number
-  storedCount: number
-  currentCount: number
-  staleCount: number
-  dimensions: number[]
-}
-
-export interface AgentResourceStatus {
-  enabled: boolean
-  kind: AgentResourceKind
-  count: number
-  currentCount: number
-  staleCount: number
-  store: AgentResourceVectorStoreInfo
 }
 
 export interface ImageListItem {
@@ -119,6 +158,68 @@ export interface HttpApiStatusPayload {
   lastError: string
 }
 
+export type AgentToolProfile = 'chat' | 'code' | 'hybrid'
+export type CodeWorkspaceApprovalKind = 'write' | 'delete' | 'command' | 'dev-server' | 'sensitive-read'
+export type CodeWorkspaceApprovalRisk = 'low' | 'medium' | 'high'
+export type CodeWorkspaceApprovalDecision = 'approved' | 'rejected'
+export type CodeWorkspaceApprovalPolicy = 'on-request' | 'risk-based' | 'full-access'
+
+export interface CodeWorkspaceRef {
+  id: string
+  root: string
+  approvalPolicy: CodeWorkspaceApprovalPolicy
+}
+
+export interface CodeWorkspaceDevServerState {
+  running: boolean
+  command?: string
+  pid?: number
+  startedAt?: number
+  previewUrl?: string
+}
+
+export interface CodeWorkspaceState {
+  workspace: CodeWorkspaceRef | null
+  devServer: CodeWorkspaceDevServerState
+  recentLogs: string[]
+}
+
+export interface CodeWorkspaceFileItem {
+  path: string
+  type: 'file' | 'dir'
+  sizeBytes?: number
+}
+
+export interface CodeWorkspaceListFilesResult {
+  success: boolean
+  root?: string
+  items?: CodeWorkspaceFileItem[]
+  truncated?: boolean
+  error?: string
+}
+
+export interface CodeWorkspaceApprovalRequest {
+  requestId: string
+  kind: CodeWorkspaceApprovalKind
+  workspaceRoot: string
+  targetPath?: string
+  command?: string
+  diffPreview?: string
+  risk: CodeWorkspaceApprovalRisk
+  summary: string
+  createdAt: number
+}
+
+export interface CodeWorkspaceEvent {
+  type: 'state' | 'log' | 'preview-url' | 'approval-resolved'
+  state?: CodeWorkspaceState
+  log?: string
+  previewUrl?: string
+  requestId?: string
+  decision?: CodeWorkspaceApprovalDecision
+  at: number
+}
+
 export interface StatsPartialError {
   dbName?: string
   dbPath?: string
@@ -126,20 +227,139 @@ export interface StatsPartialError {
   message: string
 }
 
+export type AgentMemorySourceType =
+  | 'message'
+  | 'conversation_block'
+  | 'fact'
+  | 'relationship'
+  | 'profile'
+  | 'timeline_summary'
+  | 'media'
+
 export interface AgentMemoryItem {
   id: number
-  sourceType: 'profile' | 'fact' | 'relationship' | string
+  memoryUid: string
+  sourceType: AgentMemorySourceType
   sessionId: string | null
   contactId: string | null
   groupId?: string | null
   title: string
   content: string
+  contentHash?: string
+  entities?: string[]
   importance: number
   confidence: number
   tags: string[]
+  timeStart?: number | null
+  timeEnd?: number | null
   sourceRefs?: Array<{ sessionId: string; localId: number; createTime: number; sortSeq: number; senderUsername?: string; excerpt?: string }>
   createdAt: number
   updatedAt: number
+}
+
+export interface MemoryMigrationStatusInfo {
+  needed: boolean
+  legacyDbPath: string
+  memoryBankPath: string
+  itemCount: number
+  migratedItemCount: number
+  error?: string
+}
+
+export interface MemoryMigrationResultInfo extends MemoryMigrationStatusInfo {
+  success: boolean
+  deletedFiles: string[]
+  deleteErrors?: string[]
+  skippedItemCount?: number
+}
+
+export interface MemoryDiaryEntryInfo {
+  date: string
+  title: string
+  excerpt: string
+  content?: string
+  updatedAt: number
+}
+
+// 克隆好友（数字分身）：画像卡 + few-shot + 风格统计（与 electron/services/agent/persona/personaTypes.ts 对应）
+export interface PersonaCardInfo {
+  tone: string
+  personalityTraits: string[]
+  catchphrases: string[]
+  punctuationStyle: string
+  addressing: string
+  topics: string[]
+  ttsInstructions: string
+}
+
+export interface PersonaProfileInfo {
+  facts: string[]
+  relationship: string
+  reactionPatterns: string[]
+  boundaries: string[]
+  sharedEvents: string[]
+}
+
+export interface PersonaTtsVoiceBindingInfo {
+  provider: 'volcengine' | 'xiaomi' | 'aliyun-qwen'
+  protocol: 'volcengine-bidirectional' | 'xiaomi-mimo-tts' | 'aliyun-qwen-realtime'
+  source: 'volcengine-voice-clone' | 'xiaomi-mimo-voice-clone' | 'aliyun-qwen-voice-clone'
+  baseURL: string
+  model: string
+  voice: string
+  displayName?: string
+  sampleCount?: number
+  sampleSeconds?: number
+  sampleBytes?: number
+  sampleMimeType?: string
+  sampleHash?: string
+  modelType?: number
+  fallbackMode?: boolean
+  fallbackReason?: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface PersonaRecordInfo {
+  id: number
+  accountId: string
+  sessionId: string
+  displayName: string
+  card: PersonaCardInfo
+  fewShots: Array<{ user: string; replies: string[] }>
+  stats: {
+    sourceMessageCount: number
+    friendMessageCount: number
+    avgFriendMsgChars: number
+    avgFriendBurst: number
+    voiceRatio?: number
+    groupMessageCount?: number
+    groupSessionCount?: number
+  }
+  profile: PersonaProfileInfo | null
+  stickers?: Array<{
+    md5: string
+    cdnUrl: string
+    productId?: string
+    encryptUrl?: string
+    aesKey?: string
+    count: number
+    contexts: string[]
+  }>
+  ttsVoice: PersonaTtsVoiceBindingInfo | null
+  corpusUntil: number
+  modelProvider: string
+  modelId: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface PersonaBuildProgressInfo {
+  sessionId: string
+  stage: 'indexing' | 'corpus' | 'extracting' | 'saving' | 'done' | 'error'
+  title: string
+  percent: number
+  detail?: string
 }
 
 export interface ElectronAPI {
@@ -151,6 +371,7 @@ export interface ElectronAPI {
     onSplashFadeOut?: (callback: () => void) => () => void
     openChatWindow: () => Promise<boolean>
     openMomentsWindow: (filterUsername?: string) => Promise<boolean>
+    openPersonaChatWindow: (sessionId: string) => Promise<boolean>
     onMomentsFilterUser: (callback: (username: string) => void) => () => void
     openAgreementWindow: () => Promise<boolean>
     openPurchaseWindow: () => Promise<boolean>
@@ -158,7 +379,7 @@ export interface ElectronAPI {
     completeWelcome: () => Promise<boolean>
     isChatWindowOpen: () => Promise<boolean>
     closeChatWindow: () => Promise<boolean>
-    setTitleBarOverlay: (options: { symbolColor: string }) => void
+    setTitleBarOverlay: (options: { hidden?: boolean; symbolColor?: string }) => void
     openImageViewerWindow: (
       imagePath: string,
       liveVideoPath?: string,
@@ -177,6 +398,44 @@ export interface ElectronAPI {
     getTldCache: () => Promise<{ tlds: string[]; updatedAt: number } | null>
     setTldCache: (tlds: string[]) => Promise<void>
     onChanged: (callback: (payload: { key: string; value: unknown }) => void) => () => void
+  }
+  pet: {
+    listInstalled: () => Promise<{ success: boolean; pets?: Array<{ slug: string; displayName: string; description: string; builtin?: boolean }>; error?: string }>
+    manifest: (force?: boolean) => Promise<{ success: boolean; pets?: Array<{ slug: string; displayName: string; kind?: string; submittedBy?: string; spritesheetUrl: string; petJsonUrl: string }>; error?: string }>
+    install: (slug: string) => Promise<{ success: boolean; pet?: { slug: string; displayName: string; description: string; builtin?: boolean }; error?: string }>
+    remove: (slug: string) => Promise<{ success: boolean; error?: string }>
+    importZip: () => Promise<{ success: boolean; canceled?: boolean; pet?: { slug: string; displayName: string; description: string; builtin?: boolean }; error?: string }>
+    getSprite: (slug: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>
+    setAgentState: (state: string) => void
+    sendAgentProgress: (progress: { stage: string; title: string; detail?: string }) => void
+    getDailySummary: () => Promise<{ success: boolean; text?: string; error?: string }>
+    toggleDesktopWindow: (enabled: boolean) => Promise<{ success: boolean }>
+    setBubble: (expanded: boolean) => void
+    showContextMenu: () => void
+    onAgentState: (callback: (state: string) => void) => () => void
+    onWindowMove: (callback: (x: number) => void) => () => void
+    onBubbleFrame: (callback: (frame: { expanded: boolean; baseLeft: number; baseTop: number; baseWidth: number; baseHeight: number }) => void) => () => void
+    onContextMenuOpened: (callback: () => void) => () => void
+    onNotify: (callback: (payload: { username: string; displayName: string; avatarUrl?: string; preview: string; timestamp: number }) => void) => () => void
+    onAgentProgress: (callback: (progress: { stage: string; title: string; detail?: string }) => void) => () => void
+    onBubble: (callback: (payload: { kind: string; title: string; text: string; id?: string }) => void) => () => void
+  }
+  notify: {
+    getEnabledSessions: () => Promise<string[]>
+    setSessionEnabled: (username: string, enabled: boolean) => Promise<{ success: boolean }>
+    setActiveSession: (sessionId: string | null) => void
+    activate: () => void
+  }
+  deviceConnect: {
+    wechat: {
+      getStatus: () => Promise<{ status: 'disconnected' | 'connecting' | 'connected' | 'error'; botId: string | null; userId: string | null; error: string | null }>
+      connect: () => Promise<{ success: boolean; qrcodeImage?: string; error?: string }>
+      cancel: () => Promise<{ success: boolean }>
+      disconnect: () => Promise<{ success: boolean }>
+      onStatus: (callback: (payload: { status: 'disconnected' | 'connecting' | 'connected' | 'error'; botId: string | null; userId: string | null; error: string | null }) => void) => () => void
+      onQrcode: (callback: (payload: { qrcodeImage: string }) => void) => () => void
+      onScanState: (callback: (payload: { state: 'scaned' | 'failed'; error?: string }) => void) => () => void
+    }
   }
   accounts: {
     list: () => Promise<AccountProfile[]>
@@ -252,8 +511,8 @@ export interface ElectronAPI {
       minimumSupportedVersion?: string
       reason?: 'minimum-version' | 'blocked-version'
       checkedAt: number
-      updateSource: 'github' | 'custom' | 'none'
-      policySource: 'github' | 'custom' | 'none'
+      updateSource: 'r2' | 'github' | 'custom' | 'none'
+      policySource: 'r2' | 'github' | 'custom' | 'none'
       diagnostics?: {
         phase: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'failed'
         strategy: 'unknown' | 'differential' | 'full'
@@ -268,14 +527,14 @@ export interface ElectronAPI {
       }
     } | null>
     getUpdateSourceInfo: () => Promise<{
-      primaryUpdateSource: 'github'
+      primaryUpdateSource: 'r2'
+      r2UpdateBaseUrl: string
       githubRepository: {
         owner: string
         repo: string
       }
-      policySources: Array<'github' | 'custom'>
-      policyPrecedence: 'github'
-      forceUpdatePolicyFallbackUrl: string
+      policySources: Array<'r2' | 'github'>
+      policyPrecedence: 'r2'
     }>
     getMcpLaunchConfig: () => Promise<{
       command: string
@@ -294,8 +553,8 @@ export interface ElectronAPI {
       minimumSupportedVersion?: string
       reason?: 'minimum-version' | 'blocked-version'
       checkedAt: number
-      updateSource: 'github' | 'custom' | 'none'
-      policySource: 'github' | 'custom' | 'none'
+      updateSource: 'r2' | 'github' | 'custom' | 'none'
+      policySource: 'r2' | 'github' | 'custom' | 'none'
       diagnostics?: {
         phase: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'failed'
         strategy: 'unknown' | 'differential' | 'full'
@@ -310,14 +569,14 @@ export interface ElectronAPI {
       }
     } | null>
     getUpdateSourceInfo: () => Promise<{
-      primaryUpdateSource: 'github'
+      primaryUpdateSource: 'r2'
+      r2UpdateBaseUrl: string
       githubRepository: {
         owner: string
         repo: string
       }
-      policySources: Array<'github' | 'custom'>
-      policyPrecedence: 'github'
-      forceUpdatePolicyFallbackUrl: string
+      policySources: Array<'r2' | 'github'>
+      policyPrecedence: 'r2'
     }>
     checkForUpdates: () => Promise<{
       hasUpdate: boolean
@@ -330,8 +589,8 @@ export interface ElectronAPI {
       minimumSupportedVersion?: string
       reason?: 'minimum-version' | 'blocked-version'
       checkedAt: number
-      updateSource: 'github' | 'custom' | 'none'
-      policySource: 'github' | 'custom' | 'none'
+      updateSource: 'r2' | 'github' | 'custom' | 'none'
+      policySource: 'r2' | 'github' | 'custom' | 'none'
       diagnostics?: {
         phase: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'failed'
         strategy: 'unknown' | 'differential' | 'full'
@@ -359,8 +618,8 @@ export interface ElectronAPI {
       minimumSupportedVersion?: string
       reason?: 'minimum-version' | 'blocked-version'
       checkedAt: number
-      updateSource: 'github' | 'custom' | 'none'
-      policySource: 'github' | 'custom' | 'none'
+      updateSource: 'r2' | 'github' | 'custom' | 'none'
+      policySource: 'r2' | 'github' | 'custom' | 'none'
       diagnostics?: {
         phase: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'failed'
         strategy: 'unknown' | 'differential' | 'full'
@@ -591,7 +850,7 @@ export interface ElectronAPI {
   chat: {
     connect: () => Promise<{ success: boolean; error?: string }>
     getSessions: (offset?: number, limit?: number) => Promise<{ success: boolean; sessions?: ChatSession[]; hasMore?: boolean; error?: string }>
-    getMentionTargets: (offset?: number, limit?: number) => Promise<{ success: boolean; sessions?: ChatSession[]; hasMore?: boolean; error?: string }>
+    getMentionTargets: (offset?: number, limit?: number, keyword?: string) => Promise<{ success: boolean; sessions?: ChatSession[]; hasMore?: boolean; error?: string }>
     getContacts: () => Promise<{ success: boolean; contacts?: ContactInfo[]; error?: string }>
     getMessages: (sessionId: string, offset?: number, limit?: number) => Promise<{
       success: boolean;
@@ -794,6 +1053,7 @@ export interface ElectronAPI {
       success: boolean
       successCount?: number
       failCount?: number
+      outputPaths?: string[]
       error?: string
     }>
     exportSession: (sessionId: string, outputPath: string, options: ExportOptions) => Promise<{
@@ -810,6 +1070,26 @@ export interface ElectronAPI {
       successCount?: number
       failCount?: number
       error?: string
+    }>
+    scanDatabases: () => Promise<{
+      success: boolean
+      root?: string
+      databases?: Array<{
+        path: string
+        name: string
+        relativePath: string
+        folder: string
+        size: number
+      }>
+      error?: string
+    }>
+    exportDatabases: (selectedPaths: string[], outputDir: string) => Promise<{
+      success: boolean
+      successCount?: number
+      failCount?: number
+      error?: string
+      outputDir?: string
+      tableErrors?: Array<{ db: string; table: string; error: string }>
     }>
     onProgress: (callback: (data: {
       current?: number
@@ -1003,7 +1283,16 @@ export interface ElectronAPI {
     }) => void) => () => void
   }
   agent: {
-    run: (runId: string, messages: unknown[], scope?: unknown, modelConfig?: unknown, conversationId?: number | null) => Promise<{ success: boolean; error?: string }>
+    run: (
+      runId: string,
+      messages: unknown[],
+      scope?: unknown,
+      modelConfig?: unknown,
+      conversationId?: number | null,
+      planMode?: boolean,
+      toolProfile?: AgentToolProfile,
+      codeWorkspace?: CodeWorkspaceRef | null
+    ) => Promise<{ success: boolean; error?: string }>
     abort: (runId: string) => Promise<{ success: boolean }>
     generateTitle: (firstMessage: string, modelConfig?: unknown) => Promise<{ success: boolean; title?: string; error?: string }>
     onChunk: (runId: string, callback: (chunk: unknown) => void) => () => void
@@ -1012,32 +1301,82 @@ export interface ElectronAPI {
     loadConversation: (id: number) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
     createConversation: (payload: unknown) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
     deleteConversation: (id: number) => Promise<{ success: boolean; error?: string }>
+    deleteConversationsByScope: (scope: unknown) => Promise<{ success: boolean; deleted?: number; error?: string }>
     renameConversation: (id: number, title: string) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
     saveConversationMessages: (payload: unknown) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
     getLastConversation: (scope?: unknown) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
   }
+  agentWorkspace: {
+    selectWorkspace: () => Promise<{ success: boolean; canceled?: boolean; state?: CodeWorkspaceState; error?: string }>
+    clearWorkspace: () => Promise<{ success: boolean; state?: CodeWorkspaceState; error?: string }>
+    stopDevServer: () => Promise<{ success: boolean; state?: CodeWorkspaceState; result?: unknown; error?: string }>
+    getState: () => Promise<{ success: boolean; state?: CodeWorkspaceState; error?: string }>
+    setApprovalPolicy: (policy: CodeWorkspaceApprovalPolicy) => Promise<{ success: boolean; state?: CodeWorkspaceState; error?: string }>
+    listFiles: (payload: { path?: string; maxDepth?: number; limit?: number }) => Promise<CodeWorkspaceListFilesResult>
+    approve: (requestId: string) => Promise<{ success: boolean; error?: string }>
+    reject: (requestId: string, reason?: string) => Promise<{ success: boolean; error?: string }>
+    onApprovalRequest: (callback: (request: CodeWorkspaceApprovalRequest) => void) => () => void
+    onWorkspaceEvent: (callback: (event: CodeWorkspaceEvent) => void) => () => void
+  }
+  persona: {
+    get: (sessionId: string) => Promise<{ success: boolean; persona?: PersonaRecordInfo | null; error?: string }>
+    list: () => Promise<{ success: boolean; personas?: PersonaRecordInfo[]; error?: string }>
+    build: (payload: { sessionId: string; displayName?: string }) => Promise<{ success: boolean; persona?: PersonaRecordInfo; error?: string }>
+    cloneVoice: (payload: { sessionId: string; displayName?: string }) => Promise<{ success: boolean; persona?: PersonaRecordInfo; voice?: PersonaTtsVoiceBindingInfo; warning?: string; error?: string }>
+    exportVoiceSample: (payload: { sessionId: string; displayName?: string; outputPath: string }) => Promise<{ success: boolean; outputPath?: string; sampleCount?: number; sampleSeconds?: number; audioBytes?: number; error?: string }>
+    delete: (sessionId: string) => Promise<{ success: boolean; error?: string }>
+    refreshIfStale: (sessionId: string) => Promise<{ success: boolean; refreshed?: boolean; persona?: PersonaRecordInfo | null; error?: string }>
+    reflect: (payload: { sessionId: string; conversationId: number }) => Promise<{ success: boolean; reflected?: boolean; error?: string }>
+    onBuildProgress: (callback: (progress: PersonaBuildProgressInfo) => void) => () => void
+    chat: (runId: string, sessionId: string, messages: unknown[]) => Promise<{ success: boolean; error?: string }>
+    abort: (runId: string) => Promise<{ success: boolean }>
+    onChunk: (runId: string, callback: (chunk: unknown) => void) => () => void
+    onProgress: (runId: string, callback: (progress: unknown) => void) => () => void
+  }
   memory: {
-    list: (opts?: { sourceType?: 'profile' | 'fact' | 'relationship'; sourceTypes?: Array<'profile' | 'fact' | 'relationship'>; sessionId?: string; tags?: string[]; withoutTags?: string[]; minConfidence?: number; limit?: number }) => Promise<{ success: boolean; items?: AgentMemoryItem[]; stats?: { itemCount: number }; error?: string }>
+    migrationStatus: () => Promise<{ success: boolean; status?: MemoryMigrationStatusInfo; error?: string }>
+    migrateLegacy: () => Promise<{ success: boolean; result?: MemoryMigrationResultInfo; error?: string }>
+    list: (opts?: { sourceType?: AgentMemorySourceType; sourceTypes?: AgentMemorySourceType[]; sessionId?: string; tags?: string[]; withoutTags?: string[]; minConfidence?: number; limit?: number }) => Promise<{ success: boolean; items?: AgentMemoryItem[]; stats?: { itemCount: number }; error?: string }>
+    listDiaries: (limit?: number) => Promise<{ success: boolean; diaries?: MemoryDiaryEntryInfo[]; error?: string }>
+    readDiary: (date: string) => Promise<{ success: boolean; diary?: MemoryDiaryEntryInfo; error?: string }>
+    deleteDiary: (date: string) => Promise<{ success: boolean; error?: string }>
+    summarizeTodayDiary: () => Promise<{ success: boolean; alreadyExists?: boolean; diary?: MemoryDiaryEntryInfo; error?: string }>
+    create: (payload: { memoryUid?: string; sourceType?: AgentMemorySourceType; content?: string; title?: string; importance?: number; confidence?: number; tags?: string[] }) => Promise<{ success: boolean; item?: AgentMemoryItem; error?: string }>
     delete: (id: number) => Promise<{ success: boolean; error?: string }>
-    update: (payload: { id: number; sourceType?: 'profile' | 'fact' | 'relationship'; content?: string; importance?: number; confidence?: number; tags?: string[] }) => Promise<{ success: boolean; item?: AgentMemoryItem; error?: string }>
-    consolidate: () => Promise<{ success: boolean; result?: { removed: number; groups: number; scanned: number }; error?: string }>
+    update: (payload: { id: number; sourceType?: AgentMemorySourceType; content?: string; importance?: number; confidence?: number; tags?: string[] }) => Promise<{ success: boolean; item?: AgentMemoryItem; error?: string }>
+    consolidate: () => Promise<{ success: boolean; result?: { removed: number; groups: number; scanned: number; profileBuilt?: boolean; profileBuildError?: string }; error?: string }>
     exportMarkdown: (outputDir: string) => Promise<{ success: boolean; result?: { files: string[]; itemCount: number }; error?: string }>
   }
   embedding: {
     getConfig: () => Promise<{ success: boolean; config?: EmbeddingConfig; error?: string }>
     setConfig: (patch: Partial<EmbeddingConfig>) => Promise<{ success: boolean; config?: EmbeddingConfig; error?: string }>
-    test: (cfg: EmbeddingConfig) => Promise<{ success: boolean; dimension?: number; error?: string }>
+    test: (cfg: EmbeddingConfig) => Promise<{ success: boolean; dimension?: number; error?: string; dimensionMismatch?: string }>
     sessionStatus: (sessionId: string) => Promise<{ success: boolean; enabled?: boolean; count?: number; store?: EmbeddingVectorStoreInfo; error?: string }>
     buildSession: (sessionId: string) => Promise<{ success: boolean; indexed?: number; error?: string }>
-    agentResourceStatus: (kind: AgentResourceKind) => Promise<{ success: boolean; status?: AgentResourceStatus; error?: string }>
-    buildAgentResources: (kind: AgentResourceKind) => Promise<{ success: boolean; indexed?: number; error?: string }>
     onBuildProgress: (callback: (progress: EmbeddingBuildProgress) => void) => () => void
-    onAgentResourceBuildProgress: (callback: (progress: AgentResourceBuildProgress) => void) => () => void
   }
   rerank: {
     getConfig: () => Promise<{ success: boolean; config?: RerankConfig; error?: string }>
     setConfig: (patch: Partial<RerankConfig>) => Promise<{ success: boolean; config?: RerankConfig; error?: string }>
     test: (cfg: RerankConfig) => Promise<{ success: boolean; error?: string }>
+  }
+  webSearch: {
+    getConfig: () => Promise<{ success: boolean; config?: WebSearchConfig; error?: string }>
+    setConfig: (patch: Partial<WebSearchConfig>) => Promise<{ success: boolean; config?: WebSearchConfig; error?: string }>
+    test: (cfg: WebSearchConfig) => Promise<{ success: boolean; resultCount?: number; error?: string }>
+  }
+  tts: {
+    getConfig: () => Promise<{ success: boolean; config?: TtsConfig; available?: boolean; error?: string }>
+    setConfig: (patch: Partial<TtsConfig>) => Promise<{ success: boolean; config?: TtsConfig; error?: string }>
+    test: (cfg: Partial<TtsConfig>) => Promise<TtsSpeakResult>
+    speak: (text: string, options?: TtsSpeakOptions) => Promise<TtsSpeakResult>
+    stream?: (streamId: string, text: string, options: TtsSpeakOptions | undefined, callback: (event: TtsStreamEvent) => void) => Promise<TtsStreamResult>
+    cancelStream?: (streamId: string) => Promise<{ success: boolean }>
+  }
+  imageGen: {
+    getConfig: () => Promise<{ success: boolean; config?: ImageGenConfig; available?: boolean; error?: string }>
+    setConfig: (patch: Partial<ImageGenConfig>) => Promise<{ success: boolean; config?: ImageGenConfig; error?: string }>
+    test: (cfg: Partial<ImageGenConfig>) => Promise<{ success: boolean; filePath?: string; mimeType?: string; error?: string }>
   }
   // AI 接入
   ai: {

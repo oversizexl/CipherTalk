@@ -206,15 +206,6 @@ function SettingsLayout() {
     title: string
     message: string
   } | null>(null)
-  const [cacheSize, setCacheSize] = useState<{
-    images: number
-    emojis: number
-    databases: number
-    aiData: number
-    logs: number
-    total: number
-  } | null>(null)
-  const [isLoadingCacheSize, setIsLoadingCacheSize] = useState(false)
   const [sttLanguages, setSttLanguagesState] = useState<string[]>([])
   const [sttModelType, setSttModelType] = useState<'int8' | 'float32'>('int8')
   const [sttMode, setSttMode] = useState<'cpu' | 'gpu' | 'online'>('cpu')
@@ -352,7 +343,6 @@ function SettingsLayout() {
     loadConfig()
     loadDefaultExportPath()
     loadAppVersion()
-    loadCacheSize()
     loadLogFiles()
     void window.electronAPI.app.getPlatformInfo().then(setPlatformInfo).catch(() => {
       // ignore
@@ -361,26 +351,50 @@ function SettingsLayout() {
 
   const loadConfig = async () => {
     try {
-      const { activeAccount, editingAccount } = await refreshAccountsState()
-      const savedKey = await configService.getDecryptKey()
-      const savedPath = await configService.getDbPath()
-      const savedWxid = await configService.getMyWxid()
-      const savedCachePath = await configService.getCachePath()
-      const savedXorKey = await configService.getImageXorKey()
-      const savedAesKey = await configService.getImageAesKey()
-      const savedExportPath = await configService.getExportPath()
-      const savedSttLanguages = await configService.getSttLanguages()
-      const savedSttModelType = await configService.getSttModelType()
-      const savedSttMode = await configService.getSttMode()
-      const savedSttOnlineProvider = await configService.getSttOnlineProvider()
-      const savedSttOnlineApiKey = await configService.getSttOnlineApiKey()
-      const savedSttOnlineBaseURL = await configService.getSttOnlineBaseURL()
-      const savedSttOnlineModel = await configService.getSttOnlineModel()
-      const savedSttOnlineLanguage = await configService.getSttOnlineLanguage()
-      const savedSttOnlineTimeoutMs = await configService.getSttOnlineTimeoutMs()
-      const savedSttOnlineMaxConcurrency = await configService.getSttOnlineMaxConcurrency()
-      const savedSkipIntegrityCheck = await configService.getSkipIntegrityCheck()
-      const savedAutoUpdateDatabase = await configService.getAutoUpdateDatabase()
+      // 账号信息和各项配置并发拉取，避免几十次串行 IPC 拖慢进入设置页
+      const accountsPromise = refreshAccountsState()
+      const [
+        savedKey, savedPath, savedWxid, savedCachePath, savedXorKey, savedAesKey,
+        savedExportPath, savedSttLanguages, savedSttModelType, savedSttMode,
+        savedSttOnlineProvider, savedSttOnlineApiKey, savedSttOnlineBaseURL,
+        savedSttOnlineModel, savedSttOnlineLanguage, savedSttOnlineTimeoutMs,
+        savedSttOnlineMaxConcurrency, savedSkipIntegrityCheck, savedAutoUpdateDatabase,
+        savedCheckInterval, savedMinInterval, savedDebounceTime,
+        savedQuoteStyle, savedExportDefaultDateRange,
+        savedAiProvider, savedAiApiKey, savedAiModel,
+        savedCloseToTray, savedHardwareAccelerationEnabled
+      ] = await Promise.all([
+        configService.getDecryptKey(),
+        configService.getDbPath(),
+        configService.getMyWxid(),
+        configService.getCachePath(),
+        configService.getImageXorKey(),
+        configService.getImageAesKey(),
+        configService.getExportPath(),
+        configService.getSttLanguages(),
+        configService.getSttModelType(),
+        configService.getSttMode(),
+        configService.getSttOnlineProvider(),
+        configService.getSttOnlineApiKey(),
+        configService.getSttOnlineBaseURL(),
+        configService.getSttOnlineModel(),
+        configService.getSttOnlineLanguage(),
+        configService.getSttOnlineTimeoutMs(),
+        configService.getSttOnlineMaxConcurrency(),
+        configService.getSkipIntegrityCheck(),
+        configService.getAutoUpdateDatabase(),
+        configService.getAutoUpdateCheckInterval(),
+        configService.getAutoUpdateMinInterval(),
+        configService.getAutoUpdateDebounceTime(),
+        configService.getQuoteStyle(),
+        configService.getExportDefaultDateRange(),
+        configService.getAiProvider(),
+        configService.getAiApiKey(),
+        configService.getAiModel(),
+        configService.getCloseToTray(),
+        configService.getHardwareAccelerationEnabled()
+      ])
+      const { activeAccount, editingAccount } = await accountsPromise
 
       if (!editingAccount && savedKey) setDecryptKey(savedKey)
       if (!editingAccount && savedPath) setDbPath(savedPath)
@@ -407,34 +421,21 @@ function SettingsLayout() {
       setSkipIntegrityCheck(savedSkipIntegrityCheck)
       setAutoUpdateDatabase(savedAutoUpdateDatabase)
 
-      // 加载自动同步高级参数
-      const savedCheckInterval = await configService.getAutoUpdateCheckInterval()
-      const savedMinInterval = await configService.getAutoUpdateMinInterval()
-      const savedDebounceTime = await configService.getAutoUpdateDebounceTime()
+      // 自动同步高级参数
       setAutoUpdateCheckInterval(savedCheckInterval)
       setAutoUpdateMinInterval(savedMinInterval)
       setAutoUpdateDebounceTime(savedDebounceTime)
 
-      const savedQuoteStyle = await configService.getQuoteStyle()
       setQuoteStyle(savedQuoteStyle)
-
-      const savedExportDefaultDateRange = await configService.getExportDefaultDateRange()
       setExportDefaultDateRange(savedExportDefaultDateRange)
 
-      // 加载 AI 配置
-      const savedAiProvider = await configService.getAiProvider()
-      const savedAiApiKey = await configService.getAiApiKey()
-      const savedAiModel = await configService.getAiModel()
-
+      // AI 配置
       setAiProviderState(savedAiProvider)
       setAiApiKeyState(savedAiApiKey)
       setAiModelState(savedAiModel)
 
-      // 加载关闭行为配置
-      const savedCloseToTray = await configService.getCloseToTray()
+      // 关闭行为配置
       setCloseToTray(savedCloseToTray)
-
-      const savedHardwareAccelerationEnabled = await configService.getHardwareAccelerationEnabled()
 
       // 保存初始配置用于比较
       const loadedConfig = {
@@ -494,20 +495,6 @@ function SettingsLayout() {
     }
   }
 
-  const loadCacheSize = async () => {
-    setIsLoadingCacheSize(true)
-    try {
-      const result = await window.electronAPI.cache.getCacheSize()
-      if (result.success && result.size) {
-        setCacheSize(result.size)
-      }
-    } catch (e) {
-      console.error('获取缓存大小失败:', e)
-    } finally {
-      setIsLoadingCacheSize(false)
-    }
-  }
-
   const loadLogFiles = async () => {
     setIsLoadingLogs(true)
     try {
@@ -563,7 +550,6 @@ function SettingsLayout() {
         setLogContent('')
         setSelectedLogFile('')
         setLogSize(0)
-        await loadCacheSize() // 重新加载缓存大小
       } else {
         showMessage(result.error || '日志清除失败', false)
       }
@@ -697,8 +683,8 @@ function SettingsLayout() {
   const handleClearAIData = () => {
     setShowClearDialog({
       type: 'aiData',
-      title: '清除 AI 数据库',
-      message: '此操作将删除历史 AI 摘要、AI 记忆、语义索引等功能产生的本地数据库，不会删除 AI 接入配置、API Key、模型和服务地址。确定要继续吗？'
+      title: '清除 AI 数据',
+      message: '此操作将删除历史 AI 摘要、AI 记忆、语义索引等功能产生的本地数据，不会删除 AI 接入配置、API Key、模型和服务地址。确定要继续吗？'
     })
   }
 
@@ -748,8 +734,6 @@ function SettingsLayout() {
           showMessage(`${showClearDialog.title}成功`, true)
           if (showClearDialog.type === 'currentAccount' || showClearDialog.type === 'allAccounts') {
             await loadConfig()
-          } else {
-            await loadCacheSize()
           }
       } else {
         showMessage(result.error || `${showClearDialog.title}失败`, false)

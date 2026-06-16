@@ -74,6 +74,21 @@ function inlineParams(sql: string, params: any[]): string {
 const UTILITY_FILE = 'wcdbUtilityProcess.js'
 const RESTART_DELAY_MS = 2000
 
+function shouldSuppressUtilityLogLine(line: string): boolean {
+  if (!line.includes('[wcdbCore] native cursor')) return false
+  if (/native cursor (?:lite )?open failed\b.*\brc=-3\b/.test(line)) return true
+  if (/native cursor batch open failed\b/.test(line) && line.includes('消息数据库未找到')) return true
+  return false
+}
+
+function filterUtilityLogText(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !shouldSuppressUtilityLogLine(line))
+    .join('\n')
+    .trim()
+}
+
 export class WcdbService extends EventEmitter {
   private worker: UtilityProcess | null = null
   private pending = new Map<number, Pending>()
@@ -124,8 +139,20 @@ export class WcdbService extends EventEmitter {
     this.initPromise = null
     this.rejectAllPending('wcdb utility process shutdown')
     if (w) {
+      let exited = false
+      let forceKillTimer: NodeJS.Timeout | null = setTimeout(() => {
+        forceKillTimer = null
+        if (exited) return
+        try { w.kill() } catch { /* ignore */ }
+      }, 1500)
+      w.once('exit', () => {
+        exited = true
+        if (forceKillTimer) {
+          clearTimeout(forceKillTimer)
+          forceKillTimer = null
+        }
+      })
       this.postToUtility(w, { id: ++this.seq, type: 'shutdown', payload: {} })
-      try { w.kill() } catch { /* ignore */ }
     }
     if (this.restartTimer) {
       clearTimeout(this.restartTimer)
@@ -141,7 +168,7 @@ export class WcdbService extends EventEmitter {
     if (!params || params.length === 0) {
       return this.execQuery(kind, path, sql)
     }
-    const result = await this.callWithAutoOpen('execQueryWithParams', { kind, path, sql, params })
+    const result = await this.callWithAutoOpen<{ success: boolean; rows?: any[]; error?: string }>('execQueryWithParams', { kind, path, sql, params })
     if (result.success || !result.error?.includes(PARAMS_UNSUPPORTED)) {
       return result
     }
@@ -281,12 +308,12 @@ export class WcdbService extends EventEmitter {
       })
 
       worker.stdout?.on('data', (chunk: Buffer) => {
-        const text = chunk.toString().trim()
+        const text = filterUtilityLogText(chunk.toString().trim())
         if (text) console.log(`[wcdbUtility:${worker.pid ?? 'unknown'}] ${text}`)
       })
 
       worker.stderr?.on('data', (chunk: Buffer) => {
-        const text = chunk.toString().trim()
+        const text = filterUtilityLogText(chunk.toString().trim())
         if (text) console.error(`[wcdbUtility:${worker.pid ?? 'unknown'}] ${text}`)
       })
 

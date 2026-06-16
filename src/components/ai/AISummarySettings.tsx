@@ -26,7 +26,7 @@ import {
   useOverlayState,
   type Key
 } from '@heroui/react'
-import { ArrowUpRight, Brain, Braces, Coins, Eye, EyeOff, FileText, Gauge, HelpCircle, Image as ImageIcon, Plus, RefreshCw, Settings2, Sparkles, Wrench } from 'lucide-react'
+import { ArrowUpRight, Brain, Braces, CheckCircle2, Coins, Eye, EyeOff, FileText, Gauge, HelpCircle, Image as ImageIcon, Pencil, Plus, RefreshCw, Settings2, Sparkles, Trash2, Wrench } from 'lucide-react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { getAIProviders, type AIModelInfo, type AIProviderInfo } from '../../types/ai'
@@ -36,6 +36,9 @@ import { useSettingsStore } from '../settings/settingsStore'
 import AIProviderLogo from './AIProviderLogo'
 import EmbeddingTab from '../settings/tabs/EmbeddingTab'
 import RerankTab from '../settings/tabs/RerankTab'
+import WebSearchTab from '../settings/tabs/WebSearchTab'
+import TtsTab from '../settings/tabs/TtsTab'
+import ImageGenTab from '../settings/tabs/ImageGenTab'
 
 type AiProviderProtocol = configService.AiProviderProtocol
 type PresetTab = 'name' | 'provider' | 'config'
@@ -315,7 +318,7 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
   const [remoteModelDetails, setRemoteModelDetails] = useState<AIModelInfo[]>([])
   const [modelListError, setModelListError] = useState('')
   const [presets, setPresets] = useState<configService.AiConfigPreset[]>([])
-  const [configMode, setConfigMode] = useState<'llm' | 'vector' | 'rerank'>('llm')
+  const [configMode, setConfigMode] = useState<'llm' | 'vector' | 'rerank' | 'webSearch' | 'tts' | 'imageGen'>('llm')
   const [showPresetDrawer, setShowPresetDrawer] = useState(false)
   const [showSavePresetDialog, setShowSavePresetDialog] = useState(false)
   const [presetName, setPresetName] = useState('')
@@ -760,12 +763,15 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
               </>
             )}
             {/* 大模型 / 向量 / 重排 切换：同一套 UI 配置不同对象 */}
-            <Tabs className="shrink-0" selectedKey={configMode} onSelectionChange={(key) => setConfigMode(key as 'llm' | 'vector' | 'rerank')}>
+            <Tabs className="shrink-0" selectedKey={configMode} onSelectionChange={(key) => setConfigMode(key as 'llm' | 'vector' | 'rerank' | 'webSearch' | 'tts' | 'imageGen')}>
               <Tabs.ListContainer>
                 <Tabs.List aria-label="配置类型">
                   <Tabs.Tab className="whitespace-nowrap" id="llm">大模型<Tabs.Indicator /></Tabs.Tab>
                   <Tabs.Tab className="whitespace-nowrap" id="vector">向量<Tabs.Indicator /></Tabs.Tab>
                   <Tabs.Tab className="whitespace-nowrap" id="rerank">重排<Tabs.Indicator /></Tabs.Tab>
+                  <Tabs.Tab className="whitespace-nowrap" id="webSearch">联网<Tabs.Indicator /></Tabs.Tab>
+                  <Tabs.Tab className="whitespace-nowrap" id="tts">语音<Tabs.Indicator /></Tabs.Tab>
+                  <Tabs.Tab className="whitespace-nowrap" id="imageGen">作图<Tabs.Indicator /></Tabs.Tab>
                 </Tabs.List>
               </Tabs.ListContainer>
             </Tabs>
@@ -1014,12 +1020,15 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
         </div>
         {configMode === 'vector' && <EmbeddingTab />}
         {configMode === 'rerank' && <RerankTab />}
+        {configMode === 'webSearch' && <WebSearchTab />}
+        {configMode === 'tts' && <TtsTab />}
+        {configMode === 'imageGen' && <ImageGenTab />}
       </div>
 
       {settingsPagePortalHost && createPortal(
         <Drawer state={presetDrawerState}>
           {showPresetDrawer && (
-            <div className="absolute inset-0 z-[160] overflow-hidden">
+            <div className="absolute inset-0 z-160 overflow-hidden">
               <button
                 aria-label="关闭预设管理"
                 className="absolute inset-0 bg-backdrop/40 backdrop-blur-sm"
@@ -1043,27 +1052,43 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
                         {presets.map(preset => {
                           const presetProviderInfo = providers.find(item => item.id === normalizeProviderId(preset.provider))
                           return (
-                          <Card key={preset.id} variant="secondary" className="flex items-center justify-between gap-3 px-4 py-3">
-                            <div className="flex min-w-0 items-center gap-3">
-                              <AIProviderLogo
-                                providerId={preset.provider}
-                                logo={presetProviderInfo?.logo}
-                                alt={presetProviderInfo?.displayName || preset.provider}
-                                className="shrink-0"
-                                size={22}
-                              />
-                              <div className="min-w-0">
-                                <Typography.Paragraph size="sm" weight="medium" truncate>{preset.name}</Typography.Paragraph>
-                                <Typography.Paragraph size="xs" color="muted" truncate>{presetProviderInfo?.displayName || preset.provider} · {preset.model}</Typography.Paragraph>
+                          <Card key={preset.id} variant="secondary" className="flex flex-col items-stretch gap-3 px-4 py-3 text-left">
+                            <div className="flex min-w-0 items-start gap-3">
+                              <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md bg-surface">
+                                <AIProviderLogo
+                                  providerId={preset.provider}
+                                  logo={presetProviderInfo?.logo}
+                                  alt={presetProviderInfo?.displayName || preset.provider}
+                                  className="shrink-0"
+                                  size={22}
+                                />
+                              </div>
+                              <div className="min-w-0 flex-1 space-y-1">
+                                <Typography.Paragraph size="sm" weight="medium" className="truncate text-left">{preset.name}</Typography.Paragraph>
+                                <div className="grid gap-x-3 gap-y-1 text-left text-xs text-muted sm:grid-cols-[72px_minmax(0,1fr)]">
+                                  <span className="text-muted-foreground">服务商</span>
+                                  <span className="min-w-0 truncate text-foreground">{presetProviderInfo?.displayName || preset.provider}</span>
+                                  <span className="text-muted-foreground">模型</span>
+                                  <span className="min-w-0 truncate font-medium text-foreground">{preset.model || '未填写'}</span>
+                                  <span className="text-muted-foreground">协议</span>
+                                  <span className="min-w-0 truncate">{formatProtocolLabel(preset.protocol)}</span>
+                                  {preset.baseURL && (
+                                    <>
+                                      <span className="text-muted-foreground">地址</span>
+                                      <span className="min-w-0 truncate">{preset.baseURL}</span>
+                                    </>
+                                  )}
+                                </div>
                               </div>
                             </div>
-                            <div className="flex shrink-0 items-center gap-1.5">
+                            <div className="flex flex-wrap items-center justify-end gap-1.5 border-border/50 border-t pt-3">
                               <Button
                                 type="button"
                                 variant="primary"
                                 size="sm"
                                 onPress={() => { void handleLoadPreset(preset.id); setShowPresetDrawer(false) }}
                               >
+                                <CheckCircle2 size={15} />
                                 加载
                               </Button>
                               <Button
@@ -1072,6 +1097,7 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
                                 size="sm"
                                 onPress={() => handleEditPreset(preset)}
                               >
+                                <Pencil size={15} />
                                 编辑
                               </Button>
                               <Button
@@ -1080,6 +1106,7 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
                                 size="sm"
                                 onPress={() => void handleDeletePreset(preset.id)}
                               >
+                                <Trash2 size={15} />
                                 删除
                               </Button>
                             </div>

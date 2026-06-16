@@ -6,6 +6,7 @@
  */
 import type { ToolSet } from 'ai'
 import type { AgentMcpToolDescriptor, AgentProviderConfig, AgentScope } from '../types'
+import type { CodeWorkspaceRef } from '../codeWorkspaceTypes'
 import { withToolTimeouts } from '../guards'
 import { listContacts } from './listContacts'
 import { searchMessages } from './searchMessages'
@@ -22,6 +23,16 @@ import { searchMoments, momentsStats } from './moments'
 import { createRemember, createRecall, createListMemories, createForget, createConsolidate } from './memory'
 import { createDelegateAnalysis } from './delegateAnalysis'
 import { buildMcpTools } from './mcpExternal'
+import { webSearch } from './webSearch'
+import { generateImage } from './generateImage'
+import { searchStickers, sendSticker } from './stickers'
+import { sendRandomImage } from './sendRandomImage'
+import { sendWechatFile } from './sendWechatFile'
+import { personaControl } from './personaControl'
+import { sendWechatMedia } from './wechatMedia'
+import { createCodeWorkspaceTools } from './codeWorkspace'
+import { exportChat } from './exportChat'
+import { createAgentCapabilityTools } from './capabilities'
 
 /** 基础读/查工具（不含 delegate_analysis），主 Agent 与子 Agent 共用。 */
 export function buildBaseTools(_scope: AgentScope): ToolSet {
@@ -60,10 +71,46 @@ export function buildSubAgentTools(_scope: AgentScope): ToolSet {
   }
 }
 
-export function buildTools(scope: AgentScope, providerConfig: AgentProviderConfig, mcpTools: AgentMcpToolDescriptor[] = []): ToolSet {
+/** 计划模式只保留轻量解析工具，避免计划轮直接读取/统计/总结用户数据。 */
+export function buildPlanModeTools(_scope: AgentScope, codeWorkspace?: CodeWorkspaceRef | null): ToolSet {
+  return {
+    list_contacts: listContacts,
+    list_groups: listGroups,
+    ...createCodeWorkspaceTools(codeWorkspace, { readOnly: true }),
+  }
+}
+
+export interface BuildChatToolsOptions {
+  allowWechatReplyMedia?: boolean
+}
+
+function createWechatReplyMediaTools(): ToolSet {
+  return {
+    search_stickers: searchStickers,
+    send_sticker: sendSticker,
+    send_random_image: sendRandomImage,
+    send_wechat_media: sendWechatMedia,
+    send_wechat_file: sendWechatFile,
+  }
+}
+
+export function buildChatTools(
+  scope: AgentScope,
+  providerConfig: AgentProviderConfig,
+  mcpTools: AgentMcpToolDescriptor[] = [],
+  enableWebSearch = false,
+  enableImageGen = false,
+  options: BuildChatToolsOptions = {},
+): ToolSet {
   return {
     ...buildBaseTools(scope),
+    ...createAgentCapabilityTools(),
     ...buildMcpTools(mcpTools),
+    ...(enableWebSearch ? { web_search: webSearch } : {}),
+    ...(enableImageGen ? { generate_image: generateImage } : {}),
+    ...(options.allowWechatReplyMedia ? createWechatReplyMediaTools() : {}),
+    export_chat: exportChat,
+    persona_control: personaControl,
     remember: createRemember(scope),
     recall: createRecall(scope),
     list_memories: createListMemories(scope),
@@ -75,5 +122,32 @@ export function buildTools(scope: AgentScope, providerConfig: AgentProviderConfi
       // 子 Agent 工具也套超时；用收窄工具集避免再次委托/规划/写记忆
       buildSubTools: () => withToolTimeouts(buildSubAgentTools(scope)),
     }),
+  }
+}
+
+export function buildCodeOnlyTools(
+  codeWorkspace: CodeWorkspaceRef | null | undefined,
+  enableWebSearch = false,
+  enableImageGen = false,
+): ToolSet {
+  return {
+    ...createCodeWorkspaceTools(codeWorkspace),
+    ...(enableWebSearch ? { web_search: webSearch } : {}),
+    ...(enableImageGen ? { generate_image: generateImage } : {}),
+  }
+}
+
+export function buildTools(
+  scope: AgentScope,
+  providerConfig: AgentProviderConfig,
+  mcpTools: AgentMcpToolDescriptor[] = [],
+  enableWebSearch = false,
+  enableImageGen = false,
+  codeWorkspace?: CodeWorkspaceRef | null,
+  options: BuildChatToolsOptions = {},
+): ToolSet {
+  return {
+    ...buildChatTools(scope, providerConfig, mcpTools, enableWebSearch, enableImageGen, options),
+    ...createCodeWorkspaceTools(codeWorkspace),
   }
 }

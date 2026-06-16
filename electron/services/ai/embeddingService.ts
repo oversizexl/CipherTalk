@@ -65,21 +65,68 @@ export async function embedTexts(texts: string[], cfg?: EmbeddingConfig): Promis
   return embeddings
 }
 
-/** 单条嵌入（查询用）。 */
-export async function embedQuery(text: string, cfg?: EmbeddingConfig): Promise<number[]> {
+// 查询嵌入短 TTL 缓存（含在飞请求去重）：Agent 准备阶段会对同一个问题并行做
+// MCP 工具/技能两路向量筛选，靠这里共享同一次嵌入请求；“重新生成”同样命中。
+const QUERY_EMBED_CACHE_TTL_MS = 60 * 1000
+const QUERY_EMBED_CACHE_MAX = 20
+const queryEmbedCache = new Map<string, { at: number; promise: Promise<number[]> }>()
+
+/** 单条嵌入（查询用）。查询是延迟敏感路径：默认 10s 兜底超时；Agent 准备阶段可传更短预算 + 关闭重试。 */
+export function embedQuery(
+  text: string,
+  cfg?: EmbeddingConfig,
+  opts?: { timeoutMs?: number; maxRetries?: number },
+): Promise<number[]> {
   const c = cfg || getEmbeddingConfig()
-  const { embedding } = await embed({ model: buildEmbeddingModel(c), value: text, providerOptions: embeddingProviderOptions(c) })
-  return embedding
+  const key = [c.protocol, c.baseURL, c.model, c.dimension || 0, text].join('\n')
+  const cached = queryEmbedCache.get(key)
+  if (cached && Date.now() - cached.at < QUERY_EMBED_CACHE_TTL_MS) return cached.promise
+
+  const timeoutMs = Math.max(200, Math.floor(opts?.timeoutMs ?? 10000))
+  const promise = embed({
+    model: buildEmbeddingModel(c),
+    value: text,
+    providerOptions: embeddingProviderOptions(c),
+    abortSignal: AbortSignal.timeout(timeoutMs),
+    ...(opts?.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
+  })
+    .then(({ embedding }) => embedding)
+  queryEmbedCache.set(key, { at: Date.now(), promise })
+  promise.catch(() => queryEmbedCache.delete(key)) // 失败不留缓存
+  while (queryEmbedCache.size > QUERY_EMBED_CACHE_MAX) {
+    const oldest = queryEmbedCache.keys().next().value
+    if (oldest === undefined) break
+    queryEmbedCache.delete(oldest)
+  }
+  return promise
 }
 
-/** 测试嵌入配置：成功则回传实际维度。 */
-export async function testEmbeddingConfig(cfg: EmbeddingConfig): Promise<{ success: boolean; dimension?: number; error?: string }> {
+/** 测试嵌入配置：成功则回传实际维度。优先按用户设定维度测试，不匹配则回退到默认维度重试。 */
+export async function testEmbeddingConfig(cfg: EmbeddingConfig): Promise<{ success: boolean; dimension?: number; error?: string; dimensionMismatch?: string }> {
   try {
-    const vector = await embedQuery('密语语义检索连接测试', cfg)
+    const userDimension = cfg.dimension && cfg.dimension > 0 ? cfg.dimension : 0
+    let vector: number[]
+    if (userDimension > 0) {
+      try {
+        vector = await embedQuery('密语语义检索连接测试', cfg)
+      } catch {
+        vector = await embedQuery('密语语义检索连接测试', { ...cfg, dimension: 0 })
+      }
+    } else {
+      vector = await embedQuery('密语语义检索连接测试', cfg)
+    }
     if (!Array.isArray(vector) || vector.length === 0) {
       return { success: false, error: '嵌入返回为空' }
     }
-    return { success: true, dimension: vector.length }
+    const actualDim = vector.length
+    if (userDimension > 0 && actualDim !== userDimension) {
+      return {
+        success: true,
+        dimension: actualDim,
+        dimensionMismatch: `连接成功，回退到模型默认维度 ${actualDim}`
+      }
+    }
+    return { success: true, dimension: actualDim }
   } catch (e) {
     return { success: false, error: e instanceof Error ? e.message : String(e) }
   }

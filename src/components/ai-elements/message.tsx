@@ -12,7 +12,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { Table as HeroTable } from "@heroui/react";
+import {
+  Button as HeroButton,
+  ButtonGroup as HeroButtonGroup,
+  Separator as HeroSeparator,
+  Table as HeroTable,
+  Toolbar as HeroToolbar,
+} from "@heroui/react";
 import type { FileUIPart, UIMessage } from "ai";
 import {
   CheckIcon,
@@ -23,14 +29,14 @@ import {
   DownloadIcon,
   ExternalLinkIcon,
   EyeIcon,
+  FileIcon,
   Loader2Icon,
-  PaperclipIcon,
   Table2Icon,
   XIcon,
 } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement, ReactNode } from "react";
-import { Children, createContext, isValidElement, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Streamdown } from "streamdown";
+import { Children, Fragment, cloneElement, createContext, isValidElement, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Streamdown, type AnimateOptions } from "streamdown";
 import { bundledLanguages, type BundledLanguage } from "shiki";
 import {
   Artifact,
@@ -87,52 +93,154 @@ export const MessageContent = ({
   </div>
 );
 
-export type MessageActionsProps = ComponentProps<"div">;
+export type MessageActionsProps = Omit<ComponentProps<typeof HeroToolbar>, "children"> & {
+  children?: ReactNode;
+};
 
 export const MessageActions = ({
   className,
   children,
+  "aria-label": ariaLabel = "回答操作",
   ...props
-}: MessageActionsProps) => (
-  <div className={cn("flex items-center gap-1", className)} {...props}>
-    {children}
-  </div>
-);
+}: MessageActionsProps) => {
+  const groups: ReactNode[][] = [[]];
+  for (const child of Children.toArray(children)) {
+    if (!isValidElement<MessageActionProps>(child) || child.type !== MessageAction) {
+      groups[groups.length - 1].push(child);
+      continue;
+    }
+    if (child.props.startsGroup && groups[groups.length - 1].length > 0) {
+      groups.push([]);
+    }
+    const groupIndex = groups[groups.length - 1].length;
+    groups[groups.length - 1].push(cloneElement(child, {
+      showGroupSeparator: child.props.showGroupSeparator ?? groupIndex > 0,
+    }));
+  }
 
-export type MessageActionProps = ComponentProps<typeof Button> & {
+  return (
+    <HeroToolbar aria-label={ariaLabel} className={cn("max-w-full gap-2", className)} {...props}>
+      {groups.filter((group) => group.length > 0).map((group, index) => (
+        <Fragment key={`group-${index}`}>
+          {index > 0 && <HeroSeparator />}
+          <div className="flex items-center gap-1" role="group">
+            {group}
+          </div>
+        </Fragment>
+      ))}
+    </HeroToolbar>
+  );
+};
+
+type MessageFloatingToolbarAction = {
+  ariaLabel: string;
+  icon: ReactNode;
+  isDisabled?: boolean;
+  onPress: () => void;
+};
+
+type MessageFloatingToolbarProps = Omit<ComponentProps<typeof HeroToolbar>, "children"> & {
+  actions: MessageFloatingToolbarAction[];
+  excludeFromTableExport?: boolean;
+};
+
+function MessageFloatingToolbar({
+  actions,
+  className,
+  excludeFromTableExport = false,
+  "aria-label": ariaLabel = "内容操作",
+  ...props
+}: MessageFloatingToolbarProps) {
+  if (actions.length === 0) return null;
+
+  return (
+    <HeroToolbar
+      aria-label={ariaLabel}
+      className={cn("absolute top-1 right-1 z-10 gap-1 border-0 bg-transparent p-0 shadow-none", className)}
+      data-ai-table-actions={excludeFromTableExport ? "" : undefined}
+      {...props}
+    >
+      <HeroButtonGroup className="border-0 bg-transparent shadow-none" variant="ghost">
+        {actions.map((action) => (
+          <HeroButton
+            aria-label={action.ariaLabel}
+            className="size-8 min-w-0 bg-transparent p-0 text-muted-foreground shadow-none hover:bg-transparent hover:text-foreground data-[hovered=true]:bg-transparent data-[hovered=true]:text-foreground data-[pressed=true]:scale-95 [&_svg]:size-4"
+            isDisabled={action.isDisabled}
+            isIconOnly
+            key={action.ariaLabel}
+            onPress={action.onPress}
+            size="sm"
+          >
+            {action.icon}
+          </HeroButton>
+        ))}
+      </HeroButtonGroup>
+    </HeroToolbar>
+  );
+}
+
+export type MessageActionProps = Omit<
+  ComponentProps<"button">,
+  "children" | "className" | "disabled" | "onClick" | "type"
+> & {
+  children?: ReactNode;
+  className?: string;
+  disabled?: boolean;
+  isDisabled?: boolean;
   tooltip?: string;
   label?: string;
+  onClick?: () => void;
+  onPress?: ComponentProps<"button">["onClick"];
+  showGroupSeparator?: boolean;
+  startsGroup?: boolean;
+  size?: "icon-sm" | "sm" | "md" | "lg";
+  variant?: string;
 };
 
 export const MessageAction = ({
   tooltip,
   children,
   label,
-  variant = "ghost",
+  variant: _variant = "tertiary",
   size = "icon-sm",
+  className,
+  disabled,
+  isDisabled,
+  onClick,
+  onPress,
+  showGroupSeparator: _showGroupSeparator,
+  startsGroup: _startsGroup,
   ...props
 }: MessageActionProps) => {
-  const button = (
-    <Button size={size} type="button" variant={variant} {...props}>
-      {children}
+  const isIconOnly = size === "icon-sm" || Children.count(children) === 1;
+  const resolvedDisabled = isDisabled ?? disabled;
+  const renderedChildren = Children.map(children, (child) => {
+    if (!isValidElement<{ className?: string }>(child)) return child;
+    return cloneElement(child, {
+      className: cn(child.props.className, "size-4 stroke-[2.35]"),
+    });
+  });
+
+  return (
+    <button
+      aria-label={props["aria-label"] ?? label ?? tooltip}
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center rounded-(--agent-radius,12px) bg-transparent text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-45",
+        isIconOnly ? "size-6 p-0" : "h-7 gap-1 px-1.5 text-xs",
+        className
+      )}
+      disabled={resolvedDisabled}
+      onClick={(event) => {
+        onPress?.(event);
+        onClick?.();
+      }}
+      type="button"
+      {...props}
+    >
+      {renderedChildren}
       <span className="sr-only">{label || tooltip}</span>
-    </Button>
+    </button>
   );
-
-  if (tooltip) {
-    return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>{button}</TooltipTrigger>
-          <TooltipContent>
-            <p>{tooltip}</p>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    );
-  }
-
-  return button;
 };
 
 type MessageBranchContextType = {
@@ -335,6 +443,7 @@ export const MessageBranchPage = ({
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
   isStreaming?: boolean;
+  showStreamingIndicator?: boolean;
 };
 
 const DEFAULT_CODE_LANGUAGE: BundledLanguage = "md";
@@ -365,6 +474,7 @@ const TERMINAL_LANGUAGES = new Set([
 ]);
 
 const CHART_LANGUAGES = new Set(["chart", "echarts"]);
+const CHART_OPTION_LANGUAGES = new Set(["chart", "echarts", "json"]);
 const DATA_TABLE_LANGUAGES = new Set(["csv", "tsv"]);
 
 export type MessageRenderActivity = {
@@ -502,6 +612,10 @@ function isChartCode(language: string | undefined): boolean {
   return Boolean(language && CHART_LANGUAGES.has(language));
 }
 
+function canParseChartOption(language: string | undefined): boolean {
+  return Boolean(language && CHART_OPTION_LANGUAGES.has(language));
+}
+
 type MessageCodeProps = ComponentProps<"code"> & {
   node?: unknown;
   "data-block"?: boolean | string;
@@ -509,34 +623,26 @@ type MessageCodeProps = ComponentProps<"code"> & {
 
 function StreamingChartPlaceholder({ language }: { language?: string }) {
   return (
-    <Artifact className="my-2 h-128 max-h-[70vh] w-full max-w-full">
-      <ArtifactHeader>
-        <div className="min-w-0">
-          <ArtifactTitle className="font-mono">{language || "chart"}</ArtifactTitle>
-          <ArtifactDescription>正在生成图表</ArtifactDescription>
+    <div aria-label={`正在生成${language || "图表"}`} className="relative my-2 w-full max-w-full overflow-hidden" role="img">
+      <Loader2Icon className="absolute top-5 right-5 z-10 size-4 animate-spin text-muted-foreground" />
+      <div className="flex aspect-video min-h-72 flex-col gap-4">
+        <div className="h-5 w-40 animate-pulse rounded bg-muted" />
+        <div className="grid flex-1 grid-cols-6 items-end gap-3">
+          {[46, 72, 58, 86, 64, 78].map((height, index) => (
+            <div
+              className="animate-pulse rounded-t bg-muted"
+              key={index}
+              style={{ height: `${height}%` }}
+            />
+          ))}
         </div>
-        <Loader2Icon className="size-4 animate-spin text-muted-foreground" />
-      </ArtifactHeader>
-      <ArtifactContent className="p-0">
-        <div className="flex h-full min-h-80 flex-col gap-4 p-4">
-          <div className="h-5 w-40 animate-pulse rounded bg-muted" />
-          <div className="grid flex-1 grid-cols-6 items-end gap-3">
-            {[46, 72, 58, 86, 64, 78].map((height, index) => (
-              <div
-                className="animate-pulse rounded-t bg-muted"
-                key={index}
-                style={{ height: `${height}%` }}
-              />
-            ))}
-          </div>
-          <div className="flex justify-between gap-3">
-            <div className="h-3 w-20 animate-pulse rounded bg-muted" />
-            <div className="h-3 w-24 animate-pulse rounded bg-muted" />
-            <div className="h-3 w-16 animate-pulse rounded bg-muted" />
-          </div>
+        <div className="flex justify-between gap-3">
+          <div className="h-3 w-20 animate-pulse rounded bg-muted" />
+          <div className="h-3 w-24 animate-pulse rounded bg-muted" />
+          <div className="h-3 w-16 animate-pulse rounded bg-muted" />
         </div>
-      </ArtifactContent>
-    </Artifact>
+      </div>
+    </div>
   );
 }
 
@@ -557,7 +663,7 @@ const MessageCode = ({ children, className, node: _node, ...props }: MessageCode
   const rawLanguage = getRawCodeLanguage(className);
   const canPreviewHtml = isHtmlCode(rawLanguage, code);
   const canRenderTerminal = isTerminalCode(rawLanguage);
-  const chartOption = isChartCode(rawLanguage) ? parseChartOption(code) : null;
+  const chartOption = canParseChartOption(rawLanguage) ? parseChartOption(code) : null;
   const language = normalizeCodeLanguage(canPreviewHtml && !rawLanguage ? "html" : rawLanguage);
   const chartRef = useRef<ChartBlockHandle | null>(null);
 
@@ -582,13 +688,36 @@ const MessageCode = ({ children, className, node: _node, ...props }: MessageCode
     document.body.removeChild(link);
   };
 
+  if (chartOption) {
+    return (
+      <div className="relative my-2 w-full max-w-full overflow-hidden">
+        <MessageFloatingToolbar
+          actions={[
+            {
+              ariaLabel: isCopied ? "图表配置已复制" : "复制图表配置",
+              icon: isCopied ? <CheckIcon /> : <CopyIcon />,
+              onPress: () => void handleCopy(),
+            },
+            {
+              ariaLabel: "下载图表",
+              icon: <DownloadIcon />,
+              onPress: handleDownloadChart,
+            },
+          ]}
+          aria-label="图表操作"
+        />
+        <ChartBlock className="aspect-video h-auto min-h-72" option={chartOption} ref={chartRef} />
+      </div>
+    );
+  }
+
   return (
     <Artifact className="my-2 h-128 max-h-[70vh] w-full max-w-full">
       <ArtifactHeader>
         <div className="min-w-0">
           <ArtifactTitle className="font-mono">{rawLanguage || language}</ArtifactTitle>
           <ArtifactDescription>
-            {chartOption ? "ECharts" : showPreview && canPreviewHtml ? "HTML Preview" : canRenderTerminal ? "Terminal" : "Code"}
+            {showPreview && canPreviewHtml ? "HTML Preview" : canRenderTerminal ? "Terminal" : "Code"}
           </ArtifactDescription>
         </div>
         <ArtifactActions>
@@ -600,14 +729,6 @@ const MessageCode = ({ children, className, node: _node, ...props }: MessageCode
               tooltip={showPreview ? "查看代码" : "预览 HTML"}
             />
           )}
-          {chartOption && (
-            <ArtifactAction
-              icon={DownloadIcon}
-              label="下载图表"
-              onClick={handleDownloadChart}
-              tooltip="下载图表"
-            />
-          )}
           <ArtifactAction
             icon={isCopied ? CheckIcon : CopyIcon}
             label="复制代码"
@@ -617,9 +738,7 @@ const MessageCode = ({ children, className, node: _node, ...props }: MessageCode
         </ArtifactActions>
       </ArtifactHeader>
       <ArtifactContent className="p-0">
-        {chartOption ? (
-          <ChartBlock className="p-3" option={chartOption} ref={chartRef} />
-        ) : showPreview && canPreviewHtml ? (
+        {showPreview && canPreviewHtml ? (
           <WebPreview className="rounded-none border-0" defaultUrl="about:srcdoc">
             <WebPreviewNavigation>
               <WebPreviewUrl readOnly value="about:srcdoc" />
@@ -644,6 +763,10 @@ type MessageLinkProps = ComponentProps<"a"> & {
 
 const EXTERNAL_HREF_RE = /^(https?:)?\/\//i;
 
+function toExternalHref(href: string): string {
+  return href.startsWith("//") ? `https:${href}` : href;
+}
+
 const MessageLink = ({ children, className, href, node: _node, ...props }: MessageLinkProps) => {
   const external = Boolean(href && EXTERNAL_HREF_RE.test(href));
   const childItems = Children.toArray(children).filter((item) => item !== "");
@@ -657,6 +780,12 @@ const MessageLink = ({ children, className, href, node: _node, ...props }: Messa
       )}
       href={href}
       {...props}
+      onClick={(event) => {
+        props.onClick?.(event);
+        if (event.defaultPrevented || !external || !href) return;
+        event.preventDefault();
+        void window.electronAPI.shell.openExternal(toExternalHref(href));
+      }}
       rel={external ? "noreferrer" : props.rel}
       target={external ? "_blank" : props.target}
     >
@@ -668,6 +797,11 @@ const MessageLink = ({ children, className, href, node: _node, ...props }: Messa
 
 type MessageTableProps = ComponentProps<"table"> & {
   node?: unknown;
+};
+
+type TableSnapshot = {
+  headers: string[];
+  rows: string[][];
 };
 
 function getElementChildren(node: ReactNode): ReactNode {
@@ -699,21 +833,204 @@ function getTableRows(children: ReactNode): ReactElement[] {
   return getChildElements(children, "tr");
 }
 
+function getNodePlainText(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number" || typeof node === "bigint") {
+    return String(node);
+  }
+  if (Array.isArray(node)) return node.map(getNodePlainText).join("");
+  if (!isValidElement(node)) return "";
+  if (node.type === "br") return "\n";
+  return getNodePlainText((node.props as { children?: ReactNode }).children);
+}
+
+function normalizeTableText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function getTableSnapshot(children: ReactNode): TableSnapshot {
+  const head = getChildElements(children, "thead")[0];
+  const body = getChildElements(children, "tbody")[0];
+  const headerRow = head ? getTableRows(getElementChildren(head))[0] : undefined;
+  const headers = headerRow
+    ? getTableCells(headerRow, "th").map((cell) => normalizeTableText(getNodePlainText(getElementChildren(cell))))
+    : [];
+  const rows = (body ? getTableRows(getElementChildren(body)) : getTableRows(children))
+    .map((row) => {
+      const cells = getTableCells(row, "td");
+      return cells.map((cell) => normalizeTableText(getNodePlainText(getElementChildren(cell))));
+    })
+    .filter((row) => row.length > 0);
+
+  return { headers, rows };
+}
+
+function tableSnapshotToTsv(snapshot: TableSnapshot): string {
+  const sanitize = (value: string) => value.replace(/\t/g, " ").replace(/\r?\n/g, " ");
+  return [snapshot.headers, ...snapshot.rows]
+    .filter((row) => row.length > 0)
+    .map((row) => row.map(sanitize).join("\t"))
+    .join("\n");
+}
+
+async function waitForTableExportReady(node: HTMLElement): Promise<void> {
+  const imgs = Array.from(node.querySelectorAll("img"));
+  await Promise.all(imgs.map((img) => {
+    if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      img.addEventListener("load", () => resolve(), { once: true });
+      img.addEventListener("error", () => resolve(), { once: true });
+    });
+  }));
+  try { await document.fonts?.ready; } catch { /* ignore font readiness failures */ }
+}
+
+function getTableExportOptions(node: HTMLElement) {
+  const rect = node.getBoundingClientRect();
+  const scroll = node.querySelector<HTMLElement>("[data-ai-table-scroll]");
+  const scrollLeft = scroll?.scrollLeft ?? 0;
+  const scrollTop = scroll?.scrollTop ?? 0;
+  const width = Math.ceil(Math.max(rect.width, node.offsetWidth, 1));
+  const height = Math.ceil(Math.max(rect.height, node.offsetHeight, 1));
+  const background = window.getComputedStyle(node).backgroundColor || "#ffffff";
+
+  return {
+    bgcolor: background,
+    filter: (target: Node) => !(target instanceof HTMLElement && target.dataset.aiTableActions != null),
+    height,
+    scale: 2,
+    width,
+    style: {
+      height: `${height}px`,
+      margin: "0",
+      maxWidth: `${width}px`,
+      minWidth: `${width}px`,
+      overflow: "visible",
+      width: `${width}px`,
+    },
+    onclone: (clone: HTMLElement) => {
+      const clonedScroll = clone.querySelector<HTMLElement>("[data-ai-table-scroll]");
+      if (clonedScroll) {
+        clonedScroll.scrollLeft = scrollLeft;
+        clonedScroll.scrollTop = scrollTop;
+      }
+    },
+  };
+}
+
 const MessageTable = ({ children, className, node: _node, ..._props }: MessageTableProps) => {
   const { isStreaming } = useContext(MessageRenderContext);
+  const tableExportRef = useRef<HTMLDivElement>(null);
+  const [isCopied, setIsCopied] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const snapshot = useMemo(() => getTableSnapshot(children), [children]);
+  const hasTableData = snapshot.headers.length > 0 || snapshot.rows.length > 0;
+  const head = getChildElements(children, "thead")[0];
+  const body = getChildElements(children, "tbody")[0];
+  const headerRow = head ? getTableRows(getElementChildren(head))[0] : undefined;
+  const headerCells = headerRow ? getTableCells(headerRow, "th") : [];
+  const bodyRows = body ? getTableRows(getElementChildren(body)) : getTableRows(children);
+  const canUseHeroTable = !isStreaming && headerCells.length > 0 && bodyRows.length > 0;
+
+  const handleCopy = async () => {
+    if (!hasTableData || typeof window === "undefined" || !navigator?.clipboard?.writeText) return;
+    await navigator.clipboard.writeText(tableSnapshotToTsv(snapshot));
+    setIsCopied(true);
+    window.setTimeout(() => setIsCopied(false), 2000);
+  };
+
+  const handleDownload = async () => {
+    const node = tableExportRef.current;
+    if (!node || isExporting) return;
+    setIsExporting(true);
+    try {
+      await waitForTableExportReady(node);
+      const domtoimage = (await import("dom-to-image-more")).default;
+      const dataUrl = await (domtoimage as any).toPng(node, getTableExportOptions(node));
+      const link = document.createElement("a");
+      link.download = `ai-table-${Date.now()}.png`;
+      link.href = dataUrl;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (error) {
+      console.error("[MessageTable] 下载表格图片失败", error);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   return (
     <div className="my-4 min-w-0 max-w-full">
-      <HeroTable className={cn("max-w-full", className)}>
-        <HeroTable.ScrollContainer>
-          <HeroTable.Content
-            aria-label="AI 生成表格"
-            className="min-w-max text-sm"
-          >
-            {children}
-          </HeroTable.Content>
-        </HeroTable.ScrollContainer>
-      </HeroTable>
+      <div className="relative" data-ai-table-export>
+        <MessageFloatingToolbar
+          actions={[
+            {
+              ariaLabel: isCopied ? "表格已复制" : "复制表格",
+              icon: isCopied ? <CheckIcon /> : <CopyIcon />,
+              isDisabled: !hasTableData,
+              onPress: () => void handleCopy(),
+            },
+            {
+              ariaLabel: "下载表格图片",
+              icon: isExporting ? <Loader2Icon className="animate-spin" /> : <DownloadIcon />,
+              isDisabled: !canUseHeroTable || isExporting,
+              onPress: () => void handleDownload(),
+            },
+          ]}
+          aria-label="表格操作"
+          excludeFromTableExport
+        />
+        {canUseHeroTable ? (
+          <div ref={tableExportRef} data-ai-table-export-target>
+            <HeroTable className={cn("max-w-full", className)}>
+              <HeroTable.ScrollContainer data-ai-table-scroll>
+                <HeroTable.Content
+                  aria-label="AI 生成表格"
+                  className="min-w-max text-sm"
+                  data-ai-table-content
+                >
+                  <HeroTable.Header>
+                    {headerCells.map((header, index) => (
+                      <HeroTable.Column
+                        className={cn("whitespace-nowrap last:pr-18", getElementClassName(header))}
+                        id={`col-${index}`}
+                        isRowHeader={index === 0}
+                        key={`col-${index}`}
+                      >
+                        {getElementChildren(header)}
+                      </HeroTable.Column>
+                    ))}
+                  </HeroTable.Header>
+                  <HeroTable.Body>
+                    {bodyRows.map((row, rowIndex) => {
+                      const cells = getTableCells(row, "td");
+                      return (
+                        <HeroTable.Row
+                          className={getElementClassName(row)}
+                          id={`row-${rowIndex}`}
+                          key={`row-${rowIndex}`}
+                        >
+                          {cells.map((cell, cellIndex) => (
+                            <HeroTable.Cell
+                              className={cn("align-top wrap-break-word", getElementClassName(cell))}
+                              key={`cell-${rowIndex}-${cellIndex}`}
+                            >
+                              {getElementChildren(cell)}
+                            </HeroTable.Cell>
+                          ))}
+                        </HeroTable.Row>
+                      );
+                    })}
+                  </HeroTable.Body>
+                </HeroTable.Content>
+              </HeroTable.ScrollContainer>
+            </HeroTable>
+          </div>
+        ) : isStreaming ? (
+          <StreamingTablePlaceholder />
+        ) : null}
+      </div>
       {isStreaming && (
         <div className="mt-2 flex items-center gap-2 rounded-(--agent-radius,12px) border border-border bg-muted/30 px-3 py-2 text-muted-foreground text-xs">
           <Table2Icon className="size-3.5" />
@@ -728,57 +1045,13 @@ type MessageTableHeadProps = ComponentProps<"thead"> & {
   node?: unknown;
 };
 
-const MessageTableHead = ({ children, node: _node, ..._props }: MessageTableHeadProps) => {
-  const headerRow = getTableRows(children)[0];
-  const headers = getTableCells(headerRow, "th");
-
-  return (
-    <HeroTable.Header>
-      {(headers.length > 0 ? headers : Children.toArray(children)).map((header, index) => (
-        <HeroTable.Column
-          className={cn("whitespace-nowrap", getElementClassName(header))}
-          id={`col-${index}`}
-          isRowHeader={index === 0}
-          key={`col-${index}`}
-        >
-          {getElementChildren(header) || header}
-        </HeroTable.Column>
-      ))}
-    </HeroTable.Header>
-  );
-};
+const MessageTableHead = ({ children: _children, node: _node, ..._props }: MessageTableHeadProps) => null;
 
 type MessageTableBodyProps = ComponentProps<"tbody"> & {
   node?: unknown;
 };
 
-const MessageTableBody = ({ children, node: _node, ..._props }: MessageTableBodyProps) => {
-  const rows = getTableRows(children);
-
-  return (
-    <HeroTable.Body>
-      {rows.map((row, rowIndex) => {
-        const cells = getTableCells(row, "td");
-        return (
-          <HeroTable.Row
-            className={getElementClassName(row)}
-            id={`row-${rowIndex}`}
-            key={`row-${rowIndex}`}
-          >
-            {cells.map((cell, cellIndex) => (
-              <HeroTable.Cell
-                className={cn("align-top wrap-break-word", getElementClassName(cell))}
-                key={`cell-${rowIndex}-${cellIndex}`}
-              >
-                {getElementChildren(cell)}
-              </HeroTable.Cell>
-            ))}
-          </HeroTable.Row>
-        );
-      })}
-    </HeroTable.Body>
-  );
-};
+const MessageTableBody = ({ children: _children, node: _node, ..._props }: MessageTableBodyProps) => null;
 
 function StreamingTablePlaceholder() {
   return (
@@ -803,14 +1076,113 @@ function StreamingTablePlaceholder() {
   );
 }
 
+const PIXEL_RUNNER_FRAMES = [
+  [
+    "...##...",
+    "...##...",
+    "..####..",
+    ".#.##.#.",
+    "...##...",
+    "..#..#..",
+    ".#....#.",
+    "##....##",
+  ],
+  [
+    "...##...",
+    "...##...",
+    "..####..",
+    ".#.##.#.",
+    "...##...",
+    ".##..#..",
+    "....##..",
+    "...#..#.",
+  ],
+  [
+    "...##...",
+    "...##...",
+    "..####..",
+    "..####.#",
+    ".#.##...",
+    "...##...",
+    "..#..##.",
+    ".#....#.",
+  ],
+  [
+    "...##...",
+    "...##...",
+    "..####..",
+    "..##.#..",
+    ".#.##.#.",
+    "...##...",
+    ".##..#..",
+    "....#.##",
+  ],
+];
+
+function PixelRunnerFrame({ className, frame }: { className?: string; frame: string[] }) {
+  return (
+    <span aria-hidden className={cn("absolute inset-0 grid grid-cols-8 grid-rows-8 gap-px", className)}>
+      {frame.flatMap((row, rowIndex) =>
+        Array.from(row).map((pixel, columnIndex) => (
+          <span
+            className={cn(
+              "size-0.5 rounded-xs",
+              pixel === "#" ? "bg-current" : "bg-transparent"
+            )}
+            key={`${rowIndex}-${columnIndex}`}
+          />
+        ))
+      )}
+    </span>
+  );
+}
+
+export function MessageStreamingIndicator({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return (
+    <div
+      aria-label="AI 正在回复"
+      className={cn(
+        "mt-1.5 inline-flex w-fit items-center gap-1.5 text-muted-foreground text-xs",
+        className
+      )}
+      role="status"
+      {...props}
+    >
+      <span className="relative block h-5 w-6 shrink-0 overflow-hidden text-primary" aria-hidden>
+        <span className="absolute bottom-0.5 left-0 h-px w-6 bg-current/25" />
+        <span className="ai-runner-dust absolute bottom-1 left-0 size-0.5 rounded-xs bg-current/45" />
+        <span className="absolute top-px left-1 block size-5">
+          {PIXEL_RUNNER_FRAMES.map((frame, index) => (
+            <PixelRunnerFrame
+              className={`ai-runner-frame-${index}`}
+              frame={frame}
+              key={`runner-frame-${index}`}
+            />
+          ))}
+        </span>
+      </span>
+      <span>回复中...</span>
+    </div>
+  );
+}
+
+// 流式新增文字逐字淡入（中文没有空格分词，按字符切分）。
+// 插件自动跳过 code/pre/svg/math，且已渲染过的字符不会重复动画。
+const STREAMING_TEXT_ANIMATION: AnimateOptions = {
+  sep: "char",
+  duration: 150,
+  stagger: 10,
+};
+
 export const MessageResponse = memo(
-  ({ className, components, isStreaming = false, children, ...props }: MessageResponseProps) => {
+  ({ className, components, isStreaming = false, showStreamingIndicator = true, children, ...props }: MessageResponseProps) => {
     const markdown = typeof children === "string" ? children : "";
     const activity = useMemo(() => analyzeMessageRenderActivity(markdown, isStreaming), [isStreaming, markdown]);
 
     return (
       <MessageRenderContext.Provider value={{ isStreaming }}>
         <Streamdown
+          animated={isStreaming ? STREAMING_TEXT_ANIMATION : false}
           className={cn(
             "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
             className
@@ -829,13 +1201,29 @@ export const MessageResponse = memo(
           {children}
         </Streamdown>
         {activity.pendingTable && <StreamingTablePlaceholder />}
+        {isStreaming && showStreamingIndicator && <MessageStreamingIndicator />}
       </MessageRenderContext.Provider>
     );
   },
-  (prevProps, nextProps) => prevProps.children === nextProps.children && prevProps.isStreaming === nextProps.isStreaming
+  (prevProps, nextProps) => prevProps.children === nextProps.children
+    && prevProps.isStreaming === nextProps.isStreaming
+    && prevProps.showStreamingIndicator === nextProps.showStreamingIndicator
 );
 
 MessageResponse.displayName = "MessageResponse";
+
+function formatAttachmentSize(value: unknown): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return "大小未知";
+  }
+  if (value < 1024) return `${value} B`;
+  const kb = value / 1024;
+  if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+  const gb = mb / 1024;
+  return `${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB`;
+}
 
 export type MessageAttachmentProps = HTMLAttributes<HTMLDivElement> & {
   data: FileUIPart;
@@ -854,11 +1242,15 @@ export function MessageAttachment({
     data.mediaType?.startsWith("image/") && data.url ? "image" : "file";
   const isImage = mediaType === "image";
   const attachmentLabel = filename || (isImage ? "Image" : "Attachment");
+  const sizeBytes = (data as FileUIPart & { sizeBytes?: unknown }).sizeBytes;
+  const attachmentSize = formatAttachmentSize(sizeBytes);
 
   return (
     <div
       className={cn(
-        "group relative size-24 overflow-hidden rounded-(--agent-radius,12px)",
+        isImage
+          ? "group relative size-24 overflow-hidden rounded-(--agent-radius,12px)"
+          : "group relative flex min-h-16 w-72 max-w-full items-center gap-3 rounded-(--agent-radius,12px) border border-border/70 bg-card/80 px-3 py-2 text-left shadow-xs",
         className
       )}
       {...props}
@@ -890,20 +1282,32 @@ export function MessageAttachment({
         </>
       ) : (
         <>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="flex size-full shrink-0 items-center justify-center rounded-(--agent-radius,12px) bg-muted text-muted-foreground">
-                <PaperclipIcon className="size-4" />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>{attachmentLabel}</p>
-            </TooltipContent>
-          </Tooltip>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex min-w-0 flex-1 items-center gap-3">
+                  <div className="flex size-10 shrink-0 items-center justify-center rounded-(--agent-radius,12px) bg-muted text-muted-foreground">
+                    <FileIcon className="size-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium text-foreground text-sm">
+                      {attachmentLabel}
+                    </div>
+                    <div className="mt-0.5 text-muted-foreground text-xs">
+                      {attachmentSize}
+                    </div>
+                  </div>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>{attachmentLabel} · {attachmentSize}</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           {onRemove && (
             <Button
               aria-label="Remove attachment"
-              className="size-6 shrink-0 rounded-(--agent-radius,12px) p-0 opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100 [&>svg]:size-3"
+              className="absolute top-2 right-2 size-6 shrink-0 rounded-(--agent-radius,12px) bg-background/80 p-0 opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100 [&>svg]:size-3"
               onClick={(e) => {
                 e.stopPropagation();
                 onRemove();

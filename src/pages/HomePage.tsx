@@ -11,14 +11,16 @@ import {
   MOMENT_TEXT_TYPE,
   type RandomMomentSnippet
 } from '../features/home/randomMoment'
-import './HomePage.scss'
+import './HomePage.css'
 
 function HomePage() {
   const { isDbConnected } = useAppStore()
   const homeBackground = useThemeStore(s => s.homeBackground)
 
   const [showWhatsNew, setShowWhatsNew] = useState(false)
+  const [deferVisionClose, setDeferVisionClose] = useState(false)
   const [currentVersion, setCurrentVersion] = useState('')
+  const [currentAnnouncementId, setCurrentAnnouncementId] = useState('')
   const [failedBackgroundKey, setFailedBackgroundKey] = useState('')
 
   const [randomSnippet, setRandomSnippet] = useState<RandomMomentSnippet | null>(null)
@@ -78,15 +80,27 @@ function HomePage() {
       const version = await window.electronAPI.app.getVersion()
       setCurrentVersion(version)
 
-      const [announcementVersion, seenVersion] = await Promise.all([
+      const [announcementVersion, announcementId, seenVersion, seenId] = await Promise.all([
         window.electronAPI.config.get('releaseAnnouncementVersion'),
+        window.electronAPI.config.get('releaseAnnouncementId'),
         window.electronAPI.config.get('releaseAnnouncementSeenVersion')
+          .catch(() => ''),
+        window.electronAPI.config.get('releaseAnnouncementSeenId')
+          .catch(() => '')
       ])
 
       const normalizedAnnouncementVersion = String(announcementVersion || '').trim()
+      const normalizedAnnouncementId = String(announcementId || '').trim()
       const normalizedSeenVersion = String(seenVersion || '').trim()
+      const normalizedSeenId = String(seenId || '').trim()
+      setCurrentAnnouncementId(normalizedAnnouncementId)
 
-      if (normalizedAnnouncementVersion === version && normalizedSeenVersion !== version) {
+      const shouldShowAnnouncement = normalizedAnnouncementId
+        ? normalizedSeenId !== normalizedAnnouncementId
+        : normalizedSeenVersion !== version
+
+      if (normalizedAnnouncementVersion === version && shouldShowAnnouncement) {
+        setDeferVisionClose(true)
         setShowWhatsNew(true)
       }
     } catch (e) {
@@ -98,6 +112,9 @@ function HomePage() {
     setShowWhatsNew(false)
     if (currentVersion) {
       window.electronAPI.config.set('releaseAnnouncementSeenVersion', currentVersion)
+    }
+    if (currentAnnouncementId) {
+      window.electronAPI.config.set('releaseAnnouncementSeenId', currentAnnouncementId)
     }
   }
 
@@ -151,10 +168,23 @@ function HomePage() {
         />
       )}
       <div className="home-background-tint" aria-hidden="true" />
-      <button className="whats-new-btn" onClick={() => setShowWhatsNew(true)}>
+      <button
+        className="whats-new-btn"
+        aria-label="打开开发者愿景"
+        onClick={() => {
+          setDeferVisionClose(false)
+          setShowWhatsNew(true)
+        }}
+      >
         <Smile size={18} />
       </button>
-      {showWhatsNew && <WhatsNewModal version={currentVersion} onClose={handleCloseWhatsNew} />}
+      {showWhatsNew && (
+        <WhatsNewModal
+          deferCloseUntilAudioEnds={deferVisionClose}
+          version={currentVersion}
+          onClose={handleCloseWhatsNew}
+        />
+      )}
 
       {isDbConnected && (
         <div className="random-message-card" aria-busy={randomSnippetLoading}>

@@ -10,6 +10,8 @@ import { join } from 'path'
 import type { UIMessageChunk } from 'ai'
 import { getAppPath, isElectronPackaged } from '../runtimePaths'
 import { getElectronWorkerEnv } from '../workerEnvironment'
+import { codeWorkspaceService } from './codeWorkspaceService'
+import type { CodeWorkspaceToolCall } from './codeWorkspaceTypes'
 import type { AgentProgressEvent, AgentProviderConfig, AgentRunInput } from './types'
 
 const UTILITY_FILE = 'aiAgentUtilityProcess.js'
@@ -38,6 +40,21 @@ function errorToLogData(error: unknown): Record<string, unknown> {
 
 function truncateLogText(text: string, maxLength = 2000): string {
   return text.length > maxLength ? `${text.slice(0, maxLength)}...<truncated>` : text
+}
+
+function shouldSuppressUtilityStderrLine(line: string): boolean {
+  return /\bAI SDK Warning\b/.test(line) && (
+    line.includes('cacheControl breakpoint limit') ||
+    /Maximum\s+\d+\s+cache breakpoints exceeded/i.test(line)
+  )
+}
+
+function filterUtilityStderr(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !shouldSuppressUtilityStderrLine(line))
+    .join('\n')
+    .trim()
 }
 
 export class AgentProcessService {
@@ -87,6 +104,52 @@ export class AgentProcessService {
   async generateTitle(input: { firstMessage: string; providerConfig: AgentProviderConfig }): Promise<string> {
     const result = await this.call<{ title: string }>('generateTitle', input)
     return result.title
+  }
+
+  /** 克隆好友：在子进程内跑画像提取（两路 generateObject），返回画像卡 + few-shot。 */
+  async extractPersona(input: import('./persona/personaTypes').PersonaExtractInput): Promise<import('./persona/personaTypes').PersonaExtractResult> {
+    return this.call('extractPersona', input)
+  }
+
+  /** 深层画像 map 阶段：单块历史 → 部分画像。 */
+  async extractProfileChunk(input: import('./persona/personaTypes').PersonaProfileChunkInput): Promise<import('./persona/personaTypes').PersonaProfile> {
+    return this.call('extractProfileChunk', input)
+  }
+
+  /** 深层画像 reduce 阶段：多块部分画像 → 合并画像。 */
+  async mergeProfile(input: import('./persona/personaTypes').PersonaProfileMergeInput): Promise<import('./persona/personaTypes').PersonaProfile> {
+    return this.call('mergeProfile', input)
+  }
+
+  /** 增量进化：旧画像 + 新增聊天 → 修订后的画像。 */
+  async revisePersona(input: import('./persona/personaTypes').PersonaReviseInput): Promise<import('./persona/personaTypes').PersonaReviseResult> {
+    return this.call('revisePersona', input)
+  }
+
+  /** 克隆对话反思：提炼导演笔记 + 对话摘要。 */
+  async reflectPersona(input: import('./persona/personaTypes').PersonaReflectInput): Promise<import('./persona/personaTypes').PersonaReflectResult> {
+    return this.call('reflectPersona', input)
+  }
+
+  /** 克隆好友聊天：预检索 + 单次 generateText，完整生成后经 onChunk 按气泡回调（复用 run 的 chunk 通道）。 */
+  async personaChat(
+    input: import('./persona/personaTypes').PersonaChatInput,
+    onChunk: (chunk: UIMessageChunk) => void,
+    onProgress?: (progress: AgentProgressEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const runId = `persona-${++this.runSeq}`
+    this.chunkHandlers.set(runId, onChunk)
+    if (onProgress) this.progressHandlers.set(runId, onProgress)
+    if (signal) {
+      signal.addEventListener('abort', () => { void this.call('abort', { runId }).catch(() => undefined) })
+    }
+    try {
+      await this.call<{ done: boolean }>('personaChat', { runId, ...input })
+    } finally {
+      this.chunkHandlers.delete(runId)
+      this.progressHandlers.delete(runId)
+    }
   }
 
   shutdown(): void {
@@ -168,7 +231,7 @@ export class AgentProcessService {
         }
       })
       worker.stderr?.on('data', (chunk: Buffer) => {
-        const text = chunk.toString().trim()
+        const text = filterUtilityStderr(chunk.toString().trim())
         if (text) {
           console.error(`[aiAgentUtility:${worker.pid ?? 'unknown'}] ${text}`)
           this.logger?.warn('AIAgentProcess', 'AI Agent utility stderr', {
@@ -185,6 +248,22 @@ export class AgentProcessService {
         }
         if (msg?.type === 'mcp:callTool') {
           void this.handleMcpCall(worker, msg.payload)
+          return
+        }
+        if (msg?.type === 'codeWorkspace:call') {
+          void this.handleCodeWorkspaceCall(worker, msg.payload)
+          return
+        }
+        if (msg?.type === 'agentCapability:call') {
+          void this.handleAgentCapabilityCall(worker, msg.payload)
+          return
+        }
+        if (msg?.type === 'aiExport:call') {
+          void this.handleAiExportCall(worker, msg.payload)
+          return
+        }
+        if (msg?.type === 'aiExport:abort') {
+          void this.handleAiExportAbort(msg.payload)
           return
         }
         if (msg?.id === 0 && msg.type === 'ready') {
@@ -332,6 +411,85 @@ export class AgentProcessService {
       worker.postMessage({ type: 'mcp:result', payload: { reqId, result: response.result } })
     } catch (e: any) {
       worker.postMessage({ type: 'mcp:result', payload: { reqId, error: e?.message || String(e) } })
+    }
+  }
+
+  /**
+   * 处理子进程发来的代码工作区请求：文件系统和 shell 只允许主进程 CodeWorkspaceService 触碰。
+   */
+  private async handleCodeWorkspaceCall(
+    worker: UtilityProcess,
+    payload: { reqId: number } & CodeWorkspaceToolCall,
+  ): Promise<void> {
+    const reqId = payload?.reqId
+    try {
+      const result = await codeWorkspaceService.handleToolCall({
+        method: payload.method,
+        args: payload.args && typeof payload.args === 'object' ? payload.args : {},
+        workspace: payload.workspace ?? null,
+      })
+      worker.postMessage({ type: 'codeWorkspace:result', payload: { reqId, result } })
+    } catch (e: any) {
+      worker.postMessage({ type: 'codeWorkspace:result', payload: { reqId, error: e?.message || String(e) } })
+    }
+  }
+
+  /**
+   * 处理 Agent 子进程发来的本机能力请求。文件索引、资料库、产物、任务、桌面截图等
+   * 都在主进程执行，避免 AI utility process 绕过审计边界。
+   */
+  private async handleAgentCapabilityCall(
+    worker: UtilityProcess,
+    payload: { reqId: number; method: string; args?: Record<string, unknown> },
+  ): Promise<void> {
+    const reqId = payload?.reqId
+    try {
+      const { agentCapabilityService } = await import('./agentCapabilityService')
+      const result = await agentCapabilityService.handleCall(
+        String(payload?.method || ''),
+        payload?.args && typeof payload.args === 'object' ? payload.args : {},
+      )
+      worker.postMessage({ type: 'agentCapability:result', payload: { reqId, result } })
+    } catch (e: any) {
+      worker.postMessage({ type: 'agentCapability:result', payload: { reqId, error: e?.message || String(e) } })
+    }
+  }
+
+  /**
+   * 处理 Agent 子进程发来的 AI 导出请求：主进程只拉起/回收导出 utility process，
+   * 实际校验、解析与 exportService 调用都在 aiExportUtilityProcess 里完成。
+   */
+  private async handleAiExportCall(
+    worker: UtilityProcess,
+    payload: { reqId: number; method: string; args?: Record<string, unknown> },
+  ): Promise<void> {
+    const reqId = payload?.reqId
+    try {
+      if (payload?.method !== 'exportChat') {
+        throw new Error(`unknown aiExport method: ${payload?.method}`)
+      }
+      const { aiExportProcessService } = await import('./aiExportProcessService')
+      aiExportProcessService.setLogger(this.logger)
+      const requestId = `agent-${reqId}`
+      const result = await aiExportProcessService.exportChat(
+        requestId,
+        payload.args || {},
+        (progress) => worker.postMessage({ type: 'aiExport:progress', payload: { reqId, progress } }),
+      )
+      worker.postMessage({ type: 'aiExport:result', payload: { reqId, result } })
+    } catch (e: any) {
+      worker.postMessage({ type: 'aiExport:result', payload: { reqId, error: e?.message || String(e) } })
+    }
+  }
+
+  private async handleAiExportAbort(payload: { reqId: number }): Promise<void> {
+    try {
+      const reqId = payload?.reqId
+      if (typeof reqId !== 'number') return
+      const { aiExportProcessService } = await import('./aiExportProcessService')
+      aiExportProcessService.abort(`agent-${reqId}`)
+    } catch {
+      // ignore abort races
     }
   }
 
