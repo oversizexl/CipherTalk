@@ -13,16 +13,17 @@ import ChatPage from './pages/ChatPage'
 import AgreementPage from './pages/AgreementPage'
 import DataManagementPage from './pages/DataManagementPage'
 import SettingsPage from './pages/SettingsPage'
-import OpenApiPage from './pages/OpenApiPage'
 import McpPage from './pages/McpPage'
 import AgentPage from './pages/agent/AgentPage'
+import PersonasPage from './pages/PersonasPage'
 import DiaryPage from './pages/DiaryPage'
 import ExportPage from './pages/export/ExportPage'
-import TranscriptionAssistantPage from './pages/TranscriptionAssistantPage'
 import ActivationPage from './pages/ActivationPage'
 import ImageWindow from './pages/ImageWindow'
 import VideoWindow from './pages/VideoWindow'
 import BrowserWindowPage from './pages/BrowserWindowPage'
+import SkillPreviewWindow from './pages/SkillPreviewWindow'
+import PosterStyleWindow from './pages/PosterStyleWindow'
 import SplashPage from './pages/SplashPage'
 import ChatHistoryPage from './pages/ChatHistoryPage'
 import PersonaChatPage from './pages/PersonaChatPage'
@@ -77,6 +78,8 @@ type UpdateDownloadProgressPayload = {
   bytesPerSecond: number
 }
 
+const MAIN_WINDOW_NAV_ROUTES = new Set(['/home', '/agent', '/personas', '/settings', '/pets', '/diary', '/export'])
+
 function App() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -102,6 +105,13 @@ function App() {
   const [memoryMigrating, setMemoryMigrating] = useState(false)
   const [memoryMigrationError, setMemoryMigrationError] = useState('')
   const [memoryMigrationDismissed, setMemoryMigrationDismissed] = useState(false)
+
+  useEffect(() => {
+    const off = window.electronAPI.window.onNavigate((route) => {
+      if (MAIN_WINDOW_NAV_ROUTES.has(route)) navigate(route)
+    })
+    return off
+  }, [navigate])
 
   const formatSpeed = (bytesPerSecond: number) => {
     if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '计算中'
@@ -375,9 +385,10 @@ function App() {
   const isMomentsWindow = location.pathname === '/moments-window'
   const isAgreementWindow = location.pathname === '/agreement-window'
   const isWelcomeWindow = location.pathname === '/welcome-window'
+  const isPosterStyleWindow = location.pathname === '/poster-style-window'
 
   useEffect(() => {
-    if (memoryMigrationDismissed || isChatWindow || isMomentsWindow || isAgreementWindow || isWelcomeWindow || location.pathname === '/splash') return
+    if (memoryMigrationDismissed || isChatWindow || isMomentsWindow || isAgreementWindow || isWelcomeWindow || isPosterStyleWindow || location.pathname === '/splash') return
     let cancelled = false
     const checkMemoryMigration = async () => {
       try {
@@ -393,7 +404,7 @@ function App() {
     }
     void checkMemoryMigration()
     return () => { cancelled = true }
-  }, [isAgreementWindow, isChatWindow, isMomentsWindow, isWelcomeWindow, location.pathname, memoryMigrationDismissed])
+  }, [isAgreementWindow, isChatWindow, isMomentsWindow, isPosterStyleWindow, isWelcomeWindow, location.pathname, memoryMigrationDismissed])
 
   const handleDismissMemoryMigration = () => {
     setMemoryMigrationDismissed(true)
@@ -424,7 +435,7 @@ function App() {
   // 启动时自动检查配置并连接数据库
   useEffect(() => {
     // 独立窗口不需要自动连接主数据库
-    if (isChatWindow || isMomentsWindow || isAgreementWindow || isWelcomeWindow || location.pathname === '/image-viewer-window' || location.pathname === '/pet-window') return
+    if (isChatWindow || isMomentsWindow || isAgreementWindow || isWelcomeWindow || isPosterStyleWindow || location.pathname === '/image-viewer-window' || location.pathname === '/pet-window') return
 
     const autoConnect = async () => {
       try {
@@ -492,7 +503,7 @@ function App() {
     }
 
     autoConnect()
-  }, [isChatWindow, isMomentsWindow, isAgreementWindow, isWelcomeWindow, location.pathname, navigate, setDbConnected])
+  }, [isChatWindow, isMomentsWindow, isAgreementWindow, isPosterStyleWindow, isWelcomeWindow, location.pathname, navigate, setDbConnected])
 
   // 独立聊天窗口 - 只显示聊天页面，无侧边栏
   if (isChatWindow) {
@@ -525,8 +536,8 @@ function App() {
   // 独立克隆好友（数字分身）聊天窗口
   if (location.pathname.startsWith('/persona-chat/')) {
     return (
-      <div className="standalone-window">
-        <TitleBar variant="standalone" />
+      <div className="standalone-window standalone-window--persona">
+        <div className="persona-chat-drag-region" aria-hidden="true" />
         <PersonaChatPage />
       </div>
     )
@@ -563,6 +574,19 @@ function App() {
       <div className="standalone-window">
         <TitleBar variant="standalone" />
         <BrowserWindowPage />
+      </div>
+    )
+  }
+
+  if (location.pathname === '/skill-preview-window') {
+    return <SkillPreviewWindow />
+  }
+
+  if (isPosterStyleWindow) {
+    return (
+      <div className="poster-style-standalone-window">
+        <div className="poster-style-drag-bar" />
+        <PosterStyleWindow />
       </div>
     )
   }
@@ -688,12 +712,13 @@ function App() {
   }
 
   // 主窗口 - 完整布局
-  const disableContentOverflow = ['/data-management', '/settings', '/open-api', '/mcp', '/agent', '/diary', '/pets'].includes(location.pathname)
+  const disableContentOverflow = ['/data-management', '/settings', '/mcp', '/agent', '/personas', '/diary', '/pets'].includes(location.pathname)
   const fullPageRoutes = ['/home']
   const isFullPage = fullPageRoutes.includes(location.pathname)
   const edgeToEdgeRoutes: string[] = []
   const isEdgeToEdge = edgeToEdgeRoutes.includes(location.pathname)
   const isAgentPage = location.pathname === '/agent'
+  const isFlushContentPage = isAgentPage || location.pathname === '/personas'
   const pendingMemoryMigrationStatus = !isLocked && memoryMigrationStatus?.needed ? memoryMigrationStatus : null
 
   return (
@@ -803,7 +828,7 @@ function App() {
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <main
           className={`flex-1 min-w-0 ${(disableContentOverflow || isFullPage || isEdgeToEdge) ? 'overflow-hidden' : 'overflow-auto'} ${navLayout === 'sidebar' && !isEdgeToEdge ? 'bg-(--bg-primary) rounded-xl mr-3 mb-3' : ''}`}
-          style={{ paddingLeft: (isFullPage || isEdgeToEdge || isAgentPage) ? 0 : 24, paddingRight: (isFullPage || isEdgeToEdge || isAgentPage) ? 0 : 24, paddingTop: (isFullPage || isEdgeToEdge || isAgentPage) ? 0 : 24 }}
+          style={{ paddingLeft: (isFullPage || isEdgeToEdge || isFlushContentPage) ? 0 : 24, paddingRight: (isFullPage || isEdgeToEdge || isFlushContentPage) ? 0 : 24, paddingTop: (isFullPage || isEdgeToEdge || isFlushContentPage) ? 0 : 24 }}
         >
           <RouteGuard>
             <Routes>
@@ -815,14 +840,13 @@ function App() {
               <Route path="/annual-report-window" element={<Navigate to="/home" replace />} />
               <Route path="/data-management" element={<DataManagementPage />} />
               <Route path="/settings" element={<SettingsPage />} />
-              <Route path="/open-api" element={<OpenApiPage />} />
               <Route path="/mcp" element={<McpPage />} />
               <Route path="/agent" element={<AgentPage />} />
+              <Route path="/personas" element={<PersonasPage />} />
               <Route path="/diary" element={<DiaryPage />} />
               <Route path="/pets" element={<PetsPage />} />
               <Route path="/export" element={<ExportPage />} />
               <Route path="/device-connect" element={<Navigate to="/home" replace />} />
-              <Route path="/transcription-assistant" element={<TranscriptionAssistantPage />} />
               <Route path="/chat-history/:sessionId/:messageId" element={<ChatHistoryPage />} />
             </Routes>
           </RouteGuard>

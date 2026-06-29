@@ -1,5 +1,5 @@
 import type { ChatSession, Message, Contact, ContactInfo } from './models'
-import type { AccountProfile } from './account'
+import type { AccountProfile, AccountProfileInput, AccountProfilePatch } from './account'
 import type { AIModelInfo, AIProviderInfo } from './ai'
 
 export interface EmbeddingConfig {
@@ -10,6 +10,8 @@ export interface EmbeddingConfig {
   baseURL: string
   model: string
   dimension: number
+  imageEnabled?: boolean
+  imageInputMode?: 'auto' | 'image_base64' | 'content_part' | 'data_url'
 }
 
 export interface RerankConfig {
@@ -102,13 +104,17 @@ export interface EmbeddingBuildProgress {
   message: string
 }
 
+export type EmbeddingBuildTarget = 'all' | 'text' | 'image'
+
 export interface EmbeddingVectorStoreInfo {
   dbPath: string
   exists: boolean
   sizeBytes: number
   updatedAtMs: number | null
   count: number
+  mediaCount?: number
   dimensions: number[]
+  mediaDimensions?: number[]
 }
 
 export interface ImageListItem {
@@ -129,8 +135,6 @@ export interface UpdateDownloadProgressPayload {
   bytesPerSecond: number
 }
 
-export type HttpApiListenMode = 'localhost' | 'lan'
-
 /**
  * Direct DB 迁移后的 WAL 变更广播 payload，
  * 通过 `wcdb:change` channel 从主进程推送到渲染端。
@@ -139,23 +143,6 @@ export interface WcdbChangePayload {
   table: 'Session' | 'Message' | 'Contact' | 'Sns' | 'Unknown'
   dbPath: string
   walPath: string
-}
-
-export interface HttpApiStatusPayload {
-  running: boolean
-  host: string
-  listenMode: HttpApiListenMode
-  port: number
-  enabled: boolean
-  startedAt: string
-  uptimeMs: number
-  tokenConfigured: boolean
-  tokenPreview: string
-  baseUrl: string
-  chatlabBaseUrl: string
-  lanAddresses: string[]
-  endpoints: Array<{ method: string; path: string; desc: string }>
-  lastError: string
 }
 
 export type AgentToolProfile = 'chat' | 'code' | 'hybrid'
@@ -198,6 +185,39 @@ export interface CodeWorkspaceListFilesResult {
   error?: string
 }
 
+export type CodeWorkspaceBrowserDiagnosticKind =
+  | 'console'
+  | 'page-error'
+  | 'load-failed'
+  | 'render-process-gone'
+  | 'navigation'
+
+export interface CodeWorkspaceBrowserDiagnostic {
+  kind: CodeWorkspaceBrowserDiagnosticKind
+  level?: 'debug' | 'info' | 'warning' | 'error'
+  message: string
+  source?: string
+  line?: number
+  url?: string
+  at: number
+}
+
+export interface CodeWorkspaceBrowserDiagnosticsResult {
+  success: boolean
+  url?: string
+  diagnostics?: CodeWorkspaceBrowserDiagnostic[]
+  hasErrors?: boolean
+  error?: string
+}
+
+export interface SkillFileItem {
+  path: string
+  name: string
+  type: 'file' | 'dir'
+  size?: number
+  children?: SkillFileItem[]
+}
+
 export interface CodeWorkspaceApprovalRequest {
   requestId: string
   kind: CodeWorkspaceApprovalKind
@@ -211,12 +231,13 @@ export interface CodeWorkspaceApprovalRequest {
 }
 
 export interface CodeWorkspaceEvent {
-  type: 'state' | 'log' | 'preview-url' | 'approval-resolved'
+  type: 'state' | 'log' | 'preview-url' | 'approval-resolved' | 'files-changed'
   state?: CodeWorkspaceState
   log?: string
   previewUrl?: string
   requestId?: string
   decision?: CodeWorkspaceApprovalDecision
+  changedPaths?: string[]
   at: number
 }
 
@@ -278,6 +299,19 @@ export interface MemoryDiaryEntryInfo {
   title: string
   excerpt: string
   content?: string
+  updatedAt: number
+}
+
+export type MemoryBankNoteKind = 'tasks' | 'notes'
+
+export interface MemoryBankNoteInfo {
+  kind: MemoryBankNoteKind
+  fileName: string
+  title: string
+  excerpt: string
+  content?: string
+  status?: string
+  tags: string[]
   updatedAt: number
 }
 
@@ -372,7 +406,9 @@ export interface ElectronAPI {
     openChatWindow: () => Promise<boolean>
     openMomentsWindow: (filterUsername?: string) => Promise<boolean>
     openPersonaChatWindow: (sessionId: string) => Promise<boolean>
+    openPosterStyleWindow: () => Promise<boolean>
     onMomentsFilterUser: (callback: (username: string) => void) => () => void
+    onNavigate: (callback: (route: string) => void) => () => void
     openAgreementWindow: () => Promise<boolean>
     openPurchaseWindow: () => Promise<boolean>
     openWelcomeWindow: (mode?: 'default' | 'add-account') => Promise<boolean>
@@ -388,6 +424,7 @@ export interface ElectronAPI {
     ) => Promise<void>
     openVideoPlayerWindow: (videoPath: string, videoWidth?: number, videoHeight?: number) => Promise<void>
     openBrowserWindow: (url: string, title?: string) => Promise<void>
+    openSkillPreviewWindow: (skillName: string) => Promise<boolean>
     resizeToFitVideo: (videoWidth: number, videoHeight: number) => Promise<void>
     openChatHistoryWindow: (sessionId: string, messageId: number) => Promise<boolean>
     onImageListUpdate: (callback: (data: { imageList: ImageListItem[], currentIndex: number }) => void) => () => void
@@ -441,13 +478,15 @@ export interface ElectronAPI {
     list: () => Promise<AccountProfile[]>
     getActive: () => Promise<AccountProfile | null>
     setActive: (accountId: string) => Promise<AccountProfile | null>
-    save: (profile: Omit<AccountProfile, 'id' | 'createdAt' | 'updatedAt' | 'lastUsedAt'>) => Promise<AccountProfile | null>
-    update: (accountId: string, patch: Partial<Omit<AccountProfile, 'id' | 'createdAt' | 'updatedAt' | 'lastUsedAt'>>) => Promise<AccountProfile | null>
+    save: (profile: AccountProfileInput) => Promise<AccountProfile | null>
+    update: (accountId: string, patch: AccountProfilePatch) => Promise<AccountProfile | null>
     delete: (accountId: string, deleteLocalData?: boolean) => Promise<{ success: boolean; error?: string; deleted?: AccountProfile | null; nextActiveAccountId?: string }>
   }
   skillManager: {
     list: () => Promise<Array<{ name: string; version: string; description: string; builtin: boolean }>>
     readContent: (skillName: string) => Promise<{ success: boolean; content?: string; error?: string }>
+    listFiles: (skillName: string) => Promise<{ success: boolean; files?: SkillFileItem[]; truncated?: boolean; error?: string }>
+    readFile: (skillName: string, filePath: string) => Promise<{ success: boolean; path?: string; content?: string; size?: number; binary?: boolean; error?: string }>
     updateContent: (skillName: string, content: string) => Promise<{ success: boolean; error?: string }>
     exportZip: (skillName: string) => Promise<{ success: boolean; outputPath?: string; fileName?: string; version?: string; error?: string }>
     importZip: (zipPath: string) => Promise<{ success: boolean; skillName?: string; error?: string }>
@@ -634,23 +673,6 @@ export interface ElectronAPI {
       }
     }) => void) => () => void
   }
-  httpApi: {
-    getStatus: () => Promise<{
-      success: boolean
-      status?: HttpApiStatusPayload
-      error?: string
-    }>
-    applySettings: (payload: { enabled: boolean; port: number; token: string; listenMode: HttpApiListenMode }) => Promise<{
-      success: boolean
-      status?: HttpApiStatusPayload
-      error?: string
-    }>
-    restart: () => Promise<{
-      success: boolean
-      status?: HttpApiStatusPayload
-      error?: string
-    }>
-  }
   systemAuth: {
     getStatus: () => Promise<{
       platform: string
@@ -671,7 +693,7 @@ export interface ElectronAPI {
     killWeChat: () => Promise<boolean>
     launchWeChat: () => Promise<boolean>
     waitForWindow: (maxWaitSeconds?: number) => Promise<boolean>
-    startGetKey: (customWechatPath?: string, dbPath?: string) => Promise<{ success: boolean; key?: string; error?: string; needManualPath?: boolean; validatedWxid?: string }>
+    startGetKey: (customWechatPath?: string, dbPath?: string) => Promise<{ success: boolean; key?: string; error?: string; needManualPath?: boolean; needAdmin?: boolean; validatedWxid?: string; account?: { dbKey: string | null; wxid: string; name: string; number: string; phone: string; seed: number } | null }>
     cancel: () => Promise<boolean>
     detectCurrentAccount: (dbPath?: string, maxTimeDiffMinutes?: number) => Promise<{ wxid: string; dbPath: string } | null>
     onStatus: (callback: (data: { status: string; level: number }) => void) => () => void
@@ -778,6 +800,9 @@ export interface ElectronAPI {
   image: {
     decrypt: (payload: { sessionId?: string; imageMd5?: string; imageDatName?: string; createTime?: number; force?: boolean; quick?: boolean }) => Promise<{ success: boolean; localPath?: string; error?: string }>
     resolveCache: (payload: { sessionId?: string; imageMd5?: string; imageDatName?: string; createTime?: number }) => Promise<{ success: boolean; localPath?: string; hasUpdate?: boolean; error?: string }>
+    prewarm: (payloads: Array<{ sessionId?: string; imageMd5?: string; imageDatName?: string; createTime?: number }>) => Promise<{ success: boolean; requested: number; enqueued: number; cacheHits: number; decrypted: number; failed: number; skipped: number; error?: string }>
+    batchDecrypt: (payloads: Array<{ sessionId?: string; imageMd5?: string; imageDatName?: string; createTime?: number }>) => Promise<{ success: boolean; requested: number; current: number; total: number; successCount: number; failCount: number; cacheHits: number; decrypted: number; skipped: number; error?: string }>
+    onBatchDecryptProgress: (callback: (data: { current: number; total: number; successCount: number; failCount: number; cacheHits: number; decrypted: number; skipped: number }) => void) => () => void
     onUpdateAvailable: (callback: (data: { cacheKey: string; imageMd5?: string; imageDatName?: string }) => void) => () => void
     onCacheResolved: (callback: (data: { cacheKey: string; imageMd5?: string; imageDatName?: string; localPath: string }) => void) => () => void
     deleteThumbnails: () => Promise<{ success: boolean; deleted: number; error?: string }>
@@ -1187,15 +1212,8 @@ export interface ElectronAPI {
       errorCode?: 'BAD_REQUEST' | 'STT_NOT_READY' | 'INTERNAL_ERROR'
       error?: string
     }>
-    transcribeAudioFile: (filePath: string) => Promise<{
-      success: boolean
-      transcript?: string
-      sttMode?: 'cpu' | 'gpu' | 'online'
-      errorCode?: 'BAD_REQUEST' | 'STT_NOT_READY' | 'INTERNAL_ERROR'
-      error?: string
-    }>
     testOnlineConfig: (overrides?: {
-      provider?: 'openai-compatible' | 'aliyun-qwen-asr' | 'custom'
+      provider?: 'openai-compatible' | 'aliyun-qwen-asr' | 'qianwen-cloud' | 'volcano-doubao' | 'custom'
       apiKey?: string
       baseURL?: string
       model?: string
@@ -1322,6 +1340,7 @@ export interface ElectronAPI {
     get: (sessionId: string) => Promise<{ success: boolean; persona?: PersonaRecordInfo | null; error?: string }>
     list: () => Promise<{ success: boolean; personas?: PersonaRecordInfo[]; error?: string }>
     build: (payload: { sessionId: string; displayName?: string }) => Promise<{ success: boolean; persona?: PersonaRecordInfo; error?: string }>
+    updateSpeakingStyle: (payload: { sessionId: string; card: Partial<PersonaCardInfo> }) => Promise<{ success: boolean; persona?: PersonaRecordInfo; error?: string }>
     cloneVoice: (payload: { sessionId: string; displayName?: string }) => Promise<{ success: boolean; persona?: PersonaRecordInfo; voice?: PersonaTtsVoiceBindingInfo; warning?: string; error?: string }>
     exportVoiceSample: (payload: { sessionId: string; displayName?: string; outputPath: string }) => Promise<{ success: boolean; outputPath?: string; sampleCount?: number; sampleSeconds?: number; audioBytes?: number; error?: string }>
     delete: (sessionId: string) => Promise<{ success: boolean; error?: string }>
@@ -1338,6 +1357,9 @@ export interface ElectronAPI {
     migrateLegacy: () => Promise<{ success: boolean; result?: MemoryMigrationResultInfo; error?: string }>
     list: (opts?: { sourceType?: AgentMemorySourceType; sourceTypes?: AgentMemorySourceType[]; sessionId?: string; tags?: string[]; withoutTags?: string[]; minConfidence?: number; limit?: number }) => Promise<{ success: boolean; items?: AgentMemoryItem[]; stats?: { itemCount: number }; error?: string }>
     listDiaries: (limit?: number) => Promise<{ success: boolean; diaries?: MemoryDiaryEntryInfo[]; error?: string }>
+    listBankNotes: (kind: MemoryBankNoteKind, limit?: number) => Promise<{ success: boolean; notes?: MemoryBankNoteInfo[]; error?: string }>
+    readBankNote: (kind: MemoryBankNoteKind, fileName: string) => Promise<{ success: boolean; note?: MemoryBankNoteInfo; error?: string }>
+    deleteBankNote: (kind: MemoryBankNoteKind, fileName: string) => Promise<{ success: boolean; error?: string }>
     readDiary: (date: string) => Promise<{ success: boolean; diary?: MemoryDiaryEntryInfo; error?: string }>
     deleteDiary: (date: string) => Promise<{ success: boolean; error?: string }>
     summarizeTodayDiary: () => Promise<{ success: boolean; alreadyExists?: boolean; diary?: MemoryDiaryEntryInfo; error?: string }>
@@ -1350,9 +1372,9 @@ export interface ElectronAPI {
   embedding: {
     getConfig: () => Promise<{ success: boolean; config?: EmbeddingConfig; error?: string }>
     setConfig: (patch: Partial<EmbeddingConfig>) => Promise<{ success: boolean; config?: EmbeddingConfig; error?: string }>
-    test: (cfg: EmbeddingConfig) => Promise<{ success: boolean; dimension?: number; error?: string; dimensionMismatch?: string }>
-    sessionStatus: (sessionId: string) => Promise<{ success: boolean; enabled?: boolean; count?: number; store?: EmbeddingVectorStoreInfo; error?: string }>
-    buildSession: (sessionId: string) => Promise<{ success: boolean; indexed?: number; error?: string }>
+    test: (cfg: EmbeddingConfig) => Promise<{ success: boolean; dimension?: number; imageDimension?: number; imageInputMode?: 'image_base64' | 'content_part' | 'data_url'; error?: string; dimensionMismatch?: string }>
+    sessionStatus: (sessionId: string) => Promise<{ success: boolean; enabled?: boolean; mediaEnabled?: boolean; count?: number; mediaCount?: number; store?: EmbeddingVectorStoreInfo; error?: string }>
+    buildSession: (sessionId: string, options?: { target?: EmbeddingBuildTarget }) => Promise<{ success: boolean; indexed?: number; mediaIndexed?: number; error?: string }>
     onBuildProgress: (callback: (progress: EmbeddingBuildProgress) => void) => () => void
   }
   rerank: {

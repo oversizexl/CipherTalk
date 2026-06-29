@@ -12,6 +12,9 @@ export interface SettingsConfig {
   cachePath: string
   imageXorKey: string
   imageAesKey: string
+  displayName: string
+  wechatNumber: string
+  phone: string
   editingAccountId: string
   skipIntegrityCheck: boolean
   autoUpdateDatabase: boolean
@@ -23,7 +26,7 @@ export interface SettingsConfig {
   sttLanguages: string[]
   sttModelType: 'int8' | 'float32'
   sttMode: 'cpu' | 'gpu' | 'online'
-  sttOnlineProvider: 'openai-compatible' | 'aliyun-qwen-asr' | 'custom'
+  sttOnlineProvider: 'openai-compatible' | 'aliyun-qwen-asr' | 'volcano-doubao' | 'custom'
   sttOnlineApiKey: string
   sttOnlineBaseURL: string
   sttOnlineModel: string
@@ -51,6 +54,9 @@ export const DEFAULT_SETTINGS_CONFIG: SettingsConfig = {
   cachePath: '',
   imageXorKey: '',
   imageAesKey: '',
+  displayName: '',
+  wechatNumber: '',
+  phone: '',
   editingAccountId: '',
   skipIntegrityCheck: false,
   autoUpdateDatabase: true,

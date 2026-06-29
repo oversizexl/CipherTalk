@@ -55,10 +55,13 @@ interface ConfigSchema {
   language: string
   releaseAnnouncementVersion: string
   releaseAnnouncementId: string
+  releaseAnnouncementContentId: string
   releaseAnnouncementBody: string
   releaseAnnouncementNotes: string
   releaseAnnouncementSeenVersion: string
   releaseAnnouncementSeenId: string
+  releaseAnnouncementSeenContentId: string
+  narrationAudioEnabled: boolean | null
   homeBackgroundSource: 'preset' | 'custom'
   homeBackgroundPreset: 'beijing' | 'beijing2'
   homeBackgroundCustomType: 'image' | 'video' | ''
@@ -77,7 +80,7 @@ interface ConfigSchema {
   sttModelType: 'int8' | 'float32'
   sttMode: 'cpu' | 'gpu' | 'online'  // STT 模式：CPU / GPU / 在线
   whisperModelType: 'tiny' | 'base' | 'small' | 'medium'  // Whisper 模型类型
-  sttOnlineProvider: 'openai-compatible' | 'aliyun-qwen-asr' | 'custom'
+  sttOnlineProvider: 'openai-compatible' | 'aliyun-qwen-asr' | 'qianwen-cloud' | 'volcano-doubao' | 'custom'
   sttOnlineApiKey: string
   sttOnlineBaseURL: string
   sttOnlineModel: string
@@ -95,12 +98,6 @@ interface ConfigSchema {
   autoUpdateCheckInterval: number     // 检查间隔（秒）
   autoUpdateMinInterval: number       // 最小更新间隔（毫秒）
   autoUpdateDebounceTime: number      // 防抖时间（毫秒）
-
-  // HTTP API 相关
-  httpApiEnabled: boolean
-  httpApiPort: number
-  httpApiToken: string
-  httpApiListenMode: 'localhost' | 'lan'
 
   // 窗口关闭行为
   closeToTray: boolean
@@ -140,6 +137,8 @@ interface ConfigSchema {
     baseURL: string
     model: string
     dimension: number  // 0 = 未探测；测试连接成功后回填模型实际维度
+    imageEnabled?: boolean
+    imageInputMode?: 'auto' | 'image_base64' | 'content_part' | 'data_url'
   }
   // 重排模型（RAG/Skills/MCP 候选重排，独立于聊天模型与嵌入模型）
   rerankConfig: {
@@ -254,10 +253,13 @@ const defaults: ConfigSchema = {
   language: 'zh-CN',
   releaseAnnouncementVersion: '',
   releaseAnnouncementId: '',
+  releaseAnnouncementContentId: '',
   releaseAnnouncementBody: '',
   releaseAnnouncementNotes: '',
   releaseAnnouncementSeenVersion: '',
   releaseAnnouncementSeenId: '',
+  releaseAnnouncementSeenContentId: '',
+  narrationAudioEnabled: null,
   homeBackgroundSource: 'preset',
   homeBackgroundPreset: 'beijing',
   homeBackgroundCustomType: '',
@@ -283,10 +285,6 @@ const defaults: ConfigSchema = {
   autoUpdateCheckInterval: 60,     // 默认 60 秒检查一次
   autoUpdateMinInterval: 1000,     // 默认最小更新间隔 1 秒
   autoUpdateDebounceTime: 500,     // 默认防抖时间 0.5 秒
-  httpApiEnabled: false,
-  httpApiPort: 5031,
-  httpApiToken: '',
-  httpApiListenMode: 'localhost',
   closeToTray: true,  // 默认最小化到托盘
   diarySummaryHour: 2,
   diaryCustomPrompt: '',
@@ -306,6 +304,8 @@ const defaults: ConfigSchema = {
     baseURL: 'https://api.siliconflow.cn/v1',
     model: 'BAAI/bge-m3',
     dimension: 0,
+    imageEnabled: false,
+    imageInputMode: 'auto',
   },
   rerankConfig: {
     enabled: false,
@@ -576,6 +576,9 @@ export class ConfigService {
     const cachePath = String(profile.cachePath ?? fallback?.cachePath ?? '').trim()
     const imageXorKey = String(profile.imageXorKey ?? fallback?.imageXorKey ?? '').trim()
     const imageAesKey = String(profile.imageAesKey ?? fallback?.imageAesKey ?? '').trim()
+    // 旧账号 blob 无此字段时默认空串（即迁移）。
+    const wechatNumber = String(profile.wechatNumber ?? fallback?.wechatNumber ?? '').trim()
+    const phone = String(profile.phone ?? fallback?.phone ?? '').trim()
     const rawDisplayName = profile.displayName ?? fallback?.displayName ?? wxid ?? ''
     const displayName = String(rawDisplayName).trim() || wxid || '未命名账号'
 
@@ -586,6 +589,8 @@ export class ConfigService {
       cachePath,
       imageXorKey,
       imageAesKey,
+      wechatNumber,
+      phone,
       displayName
     }
   }

@@ -33,10 +33,6 @@ export const CONFIG_KEYS = {
   AUTO_UPDATE_CHECK_INTERVAL: 'autoUpdateCheckInterval',     // 检查间隔（秒）
   AUTO_UPDATE_MIN_INTERVAL: 'autoUpdateMinInterval',         // 最小更新间隔（毫秒）
   AUTO_UPDATE_DEBOUNCE_TIME: 'autoUpdateDebounceTime',       // 防抖时间（毫秒）
-  HTTP_API_ENABLED: 'httpApiEnabled',
-  HTTP_API_PORT: 'httpApiPort',
-  HTTP_API_TOKEN: 'httpApiToken',
-  HTTP_API_LISTEN_MODE: 'httpApiListenMode',
   MCP_ENABLED: 'mcpEnabled',
   MCP_EXPOSE_MEDIA_PATHS: 'mcpExposeMediaPaths',
   AUTH_ENABLED: 'authEnabled',
@@ -50,7 +46,8 @@ export const CONFIG_KEYS = {
   AI_PROVIDER_MODEL_CACHE: 'aiProviderModelCache',
   AI_ACTIVE_CONFIG_PRESET_ID: 'aiActiveConfigPresetId',
   AGENT_CODE_WORKSPACE_ROOT: 'agentCodeWorkspaceRoot',
-  AGENT_CODE_WORKSPACE_APPROVAL_POLICY: 'agentCodeWorkspaceApprovalPolicy'
+  AGENT_CODE_WORKSPACE_APPROVAL_POLICY: 'agentCodeWorkspaceApprovalPolicy',
+  NARRATION_AUDIO_ENABLED: 'narrationAudioEnabled'
 } as const
 
 export type { AccountProfile, AccountProfileInput, AccountProfilePatch }
@@ -111,51 +108,6 @@ export async function getAutoUpdateDebounceTime(): Promise<number> {
 // 设置防抖时间（毫秒）
 export async function setAutoUpdateDebounceTime(ms: number): Promise<void> {
   await config.set(CONFIG_KEYS.AUTO_UPDATE_DEBOUNCE_TIME, Math.max(100, Math.min(5000, ms)))
-}
-
-// --- HTTP API 配置 ---
-
-// 获取是否启用 HTTP API
-export async function getHttpApiEnabled(): Promise<boolean> {
-  const value = await config.get(CONFIG_KEYS.HTTP_API_ENABLED)
-  return value !== undefined ? (value as boolean) : false
-}
-
-// 设置是否启用 HTTP API
-export async function setHttpApiEnabled(enabled: boolean): Promise<void> {
-  await config.set(CONFIG_KEYS.HTTP_API_ENABLED, enabled)
-}
-
-// 获取 HTTP API 端口
-export async function getHttpApiPort(): Promise<number> {
-  const value = await config.get(CONFIG_KEYS.HTTP_API_PORT)
-  return (value as number) || 5031
-}
-
-// 设置 HTTP API 端口
-export async function setHttpApiPort(port: number): Promise<void> {
-  const safePort = Number.isFinite(port) ? Math.max(1, Math.min(65535, Math.floor(port))) : 5031
-  await config.set(CONFIG_KEYS.HTTP_API_PORT, safePort)
-}
-
-// 获取 HTTP API 访问令牌
-export async function getHttpApiToken(): Promise<string> {
-  const value = await config.get(CONFIG_KEYS.HTTP_API_TOKEN)
-  return (value as string) || ''
-}
-
-// 设置 HTTP API 访问令牌
-export async function setHttpApiToken(token: string): Promise<void> {
-  await config.set(CONFIG_KEYS.HTTP_API_TOKEN, token.trim())
-}
-
-export async function getHttpApiListenMode(): Promise<'localhost' | 'lan'> {
-  const value = await config.get(CONFIG_KEYS.HTTP_API_LISTEN_MODE)
-  return value === 'lan' ? 'lan' : 'localhost'
-}
-
-export async function setHttpApiListenMode(mode: 'localhost' | 'lan'): Promise<void> {
-  await config.set(CONFIG_KEYS.HTTP_API_LISTEN_MODE, mode === 'lan' ? 'lan' : 'localhost')
 }
 
 // --- 账号与数据源配置 ---
@@ -317,12 +269,14 @@ export async function setSttMode(mode: 'cpu' | 'gpu' | 'online'): Promise<void> 
   await config.set(CONFIG_KEYS.STT_MODE, mode)
 }
 
-export async function getSttOnlineProvider(): Promise<'openai-compatible' | 'aliyun-qwen-asr' | 'custom'> {
+export async function getSttOnlineProvider(): Promise<'openai-compatible' | 'aliyun-qwen-asr' | 'volcano-doubao' | 'custom'> {
   const value = await config.get(CONFIG_KEYS.STT_ONLINE_PROVIDER)
-  return (value as 'openai-compatible' | 'aliyun-qwen-asr' | 'custom') || 'openai-compatible'
+  // qianwen-cloud 已并入 aliyun-qwen-asr（同一 DashScope 兼容端点），读取时归一为后者
+  if (value === 'qianwen-cloud') return 'aliyun-qwen-asr'
+  return (value as 'openai-compatible' | 'aliyun-qwen-asr' | 'volcano-doubao' | 'custom') || 'openai-compatible'
 }
 
-export async function setSttOnlineProvider(provider: 'openai-compatible' | 'aliyun-qwen-asr' | 'custom'): Promise<void> {
+export async function setSttOnlineProvider(provider: 'openai-compatible' | 'aliyun-qwen-asr' | 'qianwen-cloud' | 'volcano-doubao' | 'custom'): Promise<void> {
   await config.set(CONFIG_KEYS.STT_ONLINE_PROVIDER, provider)
 }
 
@@ -739,4 +693,15 @@ export async function getHardwareAccelerationEnabled(): Promise<boolean> {
 
 export async function setHardwareAccelerationEnabled(enabled: boolean): Promise<void> {
   await config.set(CONFIG_KEYS.HARDWARE_ACCELERATION_ENABLED, enabled)
+}
+
+export type NarrationAudioPreference = boolean | null
+
+export async function getNarrationAudioEnabledPreference(): Promise<NarrationAudioPreference> {
+  const value = await config.get(CONFIG_KEYS.NARRATION_AUDIO_ENABLED)
+  return value === true || value === false ? value : null
+}
+
+export async function setNarrationAudioEnabled(enabled: boolean): Promise<void> {
+  await config.set(CONFIG_KEYS.NARRATION_AUDIO_ENABLED, enabled)
 }

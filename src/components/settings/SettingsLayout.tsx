@@ -209,7 +209,7 @@ function SettingsLayout() {
   const [sttLanguages, setSttLanguagesState] = useState<string[]>([])
   const [sttModelType, setSttModelType] = useState<'int8' | 'float32'>('int8')
   const [sttMode, setSttMode] = useState<'cpu' | 'gpu' | 'online'>('cpu')
-  const [sttOnlineProvider, setSttOnlineProvider] = useState<'openai-compatible' | 'aliyun-qwen-asr' | 'custom'>('openai-compatible')
+  const [sttOnlineProvider, setSttOnlineProvider] = useState<'openai-compatible' | 'aliyun-qwen-asr' | 'volcano-doubao' | 'custom'>('openai-compatible')
   const [sttOnlineApiKey, setSttOnlineApiKey] = useState('')
   const [sttOnlineBaseURL, setSttOnlineBaseURL] = useState('https://api.openai.com/v1')
   const [sttOnlineModel, setSttOnlineModel] = useState('gpt-4o-mini-transcribe')
@@ -438,6 +438,7 @@ function SettingsLayout() {
       setCloseToTray(savedCloseToTray)
 
       // 保存初始配置用于比较
+      const sourceAccount = editingAccount || activeAccount
       const loadedConfig = {
         decryptKey: savedKey || '',
         dbPath: savedPath || '',
@@ -445,6 +446,9 @@ function SettingsLayout() {
         cachePath: savedCachePath || '',
         imageXorKey: savedXorKey || '',
         imageAesKey: savedAesKey || '',
+        displayName: sourceAccount?.displayName || '',
+        wechatNumber: sourceAccount?.wechatNumber || '',
+        phone: sourceAccount?.phone || '',
         exportPath: savedExportPath || '',
         sttLanguages: savedSttLanguages && savedSttLanguages.length > 0 ? savedSttLanguages : ['zh'],
         sttModelType: savedSttModelType,
@@ -881,7 +885,7 @@ function SettingsLayout() {
         setKeyStatus(status)
       })
 
-      setKeyStatus('Hook 已安装，请登录微信...')
+      setKeyStatus('正在启动微信并扫描内存获取密钥...')
       const result = await window.electronAPI.wxKey.startGetKey(undefined, dbPath || undefined)
       removeListener()
 
@@ -1252,7 +1256,9 @@ function SettingsLayout() {
         cachePath: storeConfig.cachePath.trim(),
         imageXorKey: storeConfig.imageXorKey.trim(),
         imageAesKey: storeConfig.imageAesKey.trim(),
-        displayName: storeConfig.wxid.trim() || '未命名账号'
+        wechatNumber: storeConfig.wechatNumber.trim(),
+        phone: storeConfig.phone.trim(),
+        displayName: storeConfig.displayName.trim() || storeConfig.wxid.trim() || '未命名账号'
       }
 
       if (storeConfig.editingAccountId) {

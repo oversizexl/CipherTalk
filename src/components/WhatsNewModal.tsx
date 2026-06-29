@@ -1,6 +1,7 @@
 import { Button, Modal } from '@heroui/react'
-import { Quote, Send, X } from 'lucide-react'
+import { Send, Volume2, VolumeX, X } from 'lucide-react'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import * as configService from '../services/config'
 
 interface WhatsNewModalProps {
   deferCloseUntilAudioEnds?: boolean
@@ -8,25 +9,6 @@ interface WhatsNewModalProps {
   version: string
 }
 
-type VisionSection = {
-  key: 'memory' | 'evidence' | 'ownership'
-  text: string
-}
-
-const VISION_SECTIONS: VisionSection[] = [
-  {
-    key: 'memory',
-    text: '有人离开后，一句语音就是遗物；一段闲聊，可能是最后一次拥抱。CipherTalk 要把这些碎片从设备里救出来。'
-  },
-  {
-    key: 'evidence',
-    text: '被恶意、羞辱、威胁消耗时，聊天记录不该躺在黑盒里。它要能被快速找到、串起来、拿得出手。'
-  },
-  {
-    key: 'ownership',
-    text: '更多时候，它只是把你的数字人生还给你。不是平台的，不是某台设备的，是你的。'
-  }
-]
 
 const publicAsset = (fileName: string): string => `${import.meta.env.BASE_URL}${fileName}`
 
@@ -168,20 +150,40 @@ function buildCharacterTimings(lines: TypewriterTextPart[][], cues: SubtitleCue[
 }
 
 const FALLBACK_SUBTITLE_CUES = parseSrt(`1
-00:00:00,000 --> 00:00:16,189
-它不是聊天记录读取器。它更像一把开刃的钥匙，从旧手机里撬出体温、证据和人生主权。聊天记录不是冷数据。它可能是想念、证据、关系的暗线，也是一个人活过的痕迹。
+00:00:00,000 --> 00:00:01,943
+有些话没有消失，
 
 2
-00:00:16,344 --> 00:00:22,850
-有人离开后，一句语音就是遗物；一段闲聊，可能是最后一次拥抱。
+00:00:02,088 --> 00:00:03,857
+只是睡在时间的深处。
 
 3
-00:00:23,004 --> 00:00:39,797
-CipherTalk 要把这些碎片从设备里救出来。被恶意、羞辱、威胁消耗时，聊天记录不该躺在黑盒里。它要能被快速找到、串起来、拿得出手。更多时候，它只是把你的数字人生还给你。
+00:00:03,996 --> 00:00:05,173
+等你需要时，
 
 4
-00:00:39,960 --> 00:00:46,942
-不是平台的，不是某台设备的，是你的。死亡不是生命的终点，遗忘才是。
+00:00:05,328 --> 00:00:07,353
+它们应该还能被找到，
+
+5
+00:00:07,524 --> 00:00:08,991
+带着当时的温度，
+
+6
+00:00:09,144 --> 00:00:10,704
+和足够清楚的来路。
+
+7
+00:00:10,872 --> 00:00:12,990
+CipherTalk 继续往前，
+
+8
+00:00:13,140 --> 00:00:14,654
+为记忆留灯，
+
+9
+00:00:14,796 --> 00:00:16,008
+也为真相留门。
 `)
 
 function TypewriterText({ parts, currentTime, charTimings, startIndex }: TypewriterTextProps) {
@@ -228,19 +230,18 @@ function TypewriterText({ parts, currentTime, charTimings, startIndex }: Typewri
 
 const VISION_LINES: TypewriterTextPart[][] = [
   [
-    '它不是聊天记录读取器。',
+    '有些话没有消失，',
     {
       className: 'bg-linear-to-r from-white via-cyan-100 to-fuchsia-200 bg-clip-text text-transparent',
-      text: '它更像一把开刃的钥匙'
-    },
-    '，从旧手机里撬出体温、证据和人生主权。'
+      text: '只是睡在时间的深处。'
+    }
   ],
-  ['聊天记录不是冷数据。它可能是想念、证据、关系的暗线，也是一个人活过的痕迹。'],
-  ...VISION_SECTIONS.map((section) => [section.text]),
-  ['死亡不是生命的终点，遗忘才是。'],
-  ['《寻梦环游记》']
+  ['等你需要时，它们应该还能被找到，'],
+  ['带着当时的温度，和足够清楚的来路。'],
+  ['CipherTalk 继续往前，'],
+  ['为记忆留灯，'],
+  ['也为真相留门。']
 ]
-
 const VISION_LINE_STARTS = VISION_LINES.reduce<number[]>((starts, parts, index) => {
   if (index === 0) {
     starts.push(0)
@@ -268,16 +269,56 @@ function WhatsNewModal({ deferCloseUntilAudioEnds = false, onClose }: WhatsNewMo
   const [audioProgress, setAudioProgress] = useState(0)
   const [audioCurrentTime, setAudioCurrentTime] = useState(0)
   const [subtitleCues, setSubtitleCues] = useState<SubtitleCue[]>(FALLBACK_SUBTITLE_CUES)
+  const [audioPreferenceLoaded, setAudioPreferenceLoaded] = useState(false)
+  const [audioEnabled, setAudioEnabled] = useState<boolean | null>(null)
+  const canRunVision = audioPreferenceLoaded && audioEnabled !== null
+  const isAudioOn = audioEnabled === true
 
   const charTimings = useMemo(
     () => buildCharacterTimings(VISION_LINES, subtitleCues),
     [subtitleCues]
   )
 
+  useEffect(() => {
+    let cancelled = false
+    void configService.getNarrationAudioEnabledPreference()
+      .then((value) => {
+        if (cancelled) return
+        setAudioEnabled(value)
+      })
+      .catch((error) => {
+        console.warn('读取开发者愿景声音偏好失败:', error)
+        if (!cancelled) setAudioEnabled(null)
+      })
+      .finally(() => {
+        if (!cancelled) setAudioPreferenceLoaded(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const requestClose = useCallback(() => {
     if (closeHandledRef.current) return
     closeHandledRef.current = true
     setIsVisionOpen(false)
+  }, [])
+
+  const commitAudioPreference = useCallback((enabled: boolean) => {
+    setAudioEnabled(enabled)
+    void configService.setNarrationAudioEnabled(enabled).catch((error) => {
+      console.warn('保存开发者愿景声音偏好失败:', error)
+    })
+
+    const audio = visionAudioRef.current
+    if (!audio) return
+    audio.muted = !enabled
+    if (enabled && audio.paused) {
+      void audio.play().catch((error) => {
+        console.warn('开发者愿景音频播放失败:', error)
+        setIsCloseVisible(true)
+      })
+    }
   }, [])
 
   useEffect(() => {
@@ -316,6 +357,8 @@ function WhatsNewModal({ deferCloseUntilAudioEnds = false, onClose }: WhatsNewMo
   }, [])
 
   useEffect(() => {
+    if (!canRunVision) return
+
     const audio = visionAudioRef.current
     if (!audio) return
 
@@ -369,6 +412,7 @@ function WhatsNewModal({ deferCloseUntilAudioEnds = false, onClose }: WhatsNewMo
       })
 
     audio.currentTime = 0
+    audio.muted = !isAudioOn
     setAudioCurrentTime(0)
     if (progressFillRef.current) {
       progressFillRef.current.style.transform = 'translate3d(0, 0, 0) scaleX(0)'
@@ -390,7 +434,20 @@ function WhatsNewModal({ deferCloseUntilAudioEnds = false, onClose }: WhatsNewMo
         progressFillRef.current.style.transform = 'translate3d(0, 0, 0) scaleX(0)'
       }
     }
-  }, [])
+  }, [canRunVision])
+
+  useEffect(() => {
+    if (audioEnabled === null) return
+    const audio = visionAudioRef.current
+    if (!audio) return
+    audio.muted = !audioEnabled
+    if (audioEnabled && canRunVision && audio.paused) {
+      void audio.play().catch((error) => {
+        console.warn('开发者愿景音频播放失败:', error)
+        setIsCloseVisible(true)
+      })
+    }
+  }, [audioEnabled, canRunVision])
 
   const handleTelegram = () => {
     window.electronAPI?.shell?.openExternal?.('https://t.me/+p7YzmRMBm-gzNzJl')
@@ -403,6 +460,147 @@ function WhatsNewModal({ deferCloseUntilAudioEnds = false, onClose }: WhatsNewMo
     transform: `translate3d(0, ${(1 - actionsProgress) * 10}px, 0)`,
     transition: 'opacity 260ms cubic-bezier(0.16, 1, 0.3, 1), transform 260ms cubic-bezier(0.16, 1, 0.3, 1)'
   } satisfies CSSProperties
+
+  const visionAudioElement = (
+    <audio
+      ref={visionAudioRef}
+      src={VISION_AUDIO_SRC}
+      preload="auto"
+      aria-hidden="true"
+      onLoadedMetadata={() => {
+        lastStateProgressRef.current = -1
+        setAudioCurrentTime(0)
+        setAudioProgress(0)
+        if (progressFillRef.current) {
+          progressFillRef.current.style.transform = 'translate3d(0, 0, 0) scaleX(0)'
+        }
+      }}
+      onEnded={() => {
+        lastStateProgressRef.current = 100
+        setAudioProgress(100)
+        setIsCloseVisible(true)
+        setAudioCurrentTime(decodedDurationRef.current || visionAudioRef.current?.duration || 0)
+        if (progressFillRef.current) {
+          progressFillRef.current.style.transform = 'translate3d(0, 0, 0) scaleX(1)'
+        }
+      }}
+      onError={() => {
+        setIsCloseVisible(true)
+      }}
+    />
+  )
+
+  const visionArticle = (
+    <article className="relative mx-auto flex max-w-160 flex-col gap-5 text-[16px] leading-8 text-white/88 drop-shadow-[0_2px_12px_rgba(0,0,0,0.55)] sm:text-[17px] sm:leading-9">
+      <p className="m-0 text-2xl font-semibold leading-10 text-white sm:text-3xl sm:leading-12">
+        <TypewriterText
+          charTimings={charTimings}
+          currentTime={audioCurrentTime}
+          parts={VISION_LINES[0]}
+          startIndex={VISION_LINE_STARTS[0]}
+        />
+      </p>
+
+      <div className="flex flex-col gap-3 text-white/82">
+        {[1, 2].map((lineIndex) => (
+          <p className="m-0" key={lineIndex}>
+            <TypewriterText
+              charTimings={charTimings}
+              currentTime={audioCurrentTime}
+              parts={VISION_LINES[lineIndex]}
+              startIndex={VISION_LINE_STARTS[lineIndex]}
+            />
+          </p>
+        ))}
+      </div>
+
+      <div className="mt-2 flex flex-col gap-2 border-l border-white/35 py-1 pl-4 text-white">
+        {[3, 4, 5].map((lineIndex) => (
+          <p className={lineIndex >= 4 ? 'm-0 font-semibold' : 'm-0'} key={lineIndex}>
+            <TypewriterText
+              charTimings={charTimings}
+              currentTime={audioCurrentTime}
+              parts={VISION_LINES[lineIndex]}
+              startIndex={VISION_LINE_STARTS[lineIndex]}
+            />
+          </p>
+        ))}
+      </div>
+
+      <div className="h-px w-full overflow-hidden bg-white/12" aria-hidden="true">
+        <div
+          ref={progressFillRef}
+          className="h-full origin-left bg-linear-to-r from-white/35 via-cyan-100/85 to-fuchsia-200/80 will-change-transform"
+          style={{ transform: 'translate3d(0, 0, 0) scaleX(0)' }}
+        />
+      </div>
+
+      <div
+        className="flex flex-col gap-3 pt-1 sm:flex-row sm:items-center sm:justify-between"
+        style={actionsStyle}
+      >
+        {showActions && (
+          <>
+            <p className="m-0 text-sm leading-6 text-white/72">想看项目动向和后续演进，进频道。</p>
+            <div className="flex shrink-0 gap-2">
+              <Button
+                className="justify-center border-white/28 bg-white/12 text-white hover:bg-white/20"
+                onPress={handleTelegram}
+                variant="outline"
+              >
+                <Send className="size-4" />
+                Telegram 频道
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    </article>
+  )
+  if (canRunVision) {
+    return (
+      <div
+        aria-label="开发者手记"
+        aria-modal="true"
+      className={`fixed inset-0 overflow-hidden bg-black/55 text-white backdrop-blur-xl transition-opacity duration-240 ${isVisionOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+        role="dialog"
+        style={{ zIndex: 2000 }}
+      >
+        {visionAudioElement}
+        <div className="fixed right-5 top-5 z-10 flex items-center gap-2 sm:right-8 sm:top-8">
+          <button
+            aria-label={isAudioOn ? '关闭开发者愿景声音' : '开启开发者愿景声音'}
+            aria-pressed={isAudioOn}
+            className="inline-flex size-11 cursor-pointer items-center justify-center rounded-full border border-white/20 bg-white/10 p-0 text-white shadow-lg outline-none backdrop-blur transition-colors hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white/60"
+            onClick={() => commitAudioPreference(!isAudioOn)}
+            type="button"
+          >
+            {isAudioOn ? (
+              <Volume2 className="size-4.5" />
+            ) : (
+              <VolumeX className="size-4.5" />
+            )}
+          </button>
+          <button
+            aria-hidden={!isCloseVisible}
+            aria-label="关闭开发者愿景"
+            className={`inline-flex size-11 items-center justify-center rounded-full border border-white/10 bg-white/10 p-0 text-white shadow-lg outline-none backdrop-blur transition-[opacity,transform,background-color] duration-700 ease-out hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white/60 ${isCloseVisible ? 'scale-100 cursor-pointer opacity-100' : 'pointer-events-none scale-95 cursor-default opacity-0'}`}
+            disabled={!isCloseVisible}
+            onClick={requestClose}
+            tabIndex={isCloseVisible ? 0 : -1}
+            type="button"
+          >
+            <X className="size-4.5" />
+          </button>
+        </div>
+        <div className="flex size-full items-center overflow-y-auto px-5 py-0 sm:px-10">
+          <div className="mx-auto flex min-h-dvh w-full max-w-225 items-center">
+            {visionArticle}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <Modal.Backdrop
@@ -441,119 +639,48 @@ function WhatsNewModal({ deferCloseUntilAudioEnds = false, onClose }: WhatsNewMo
           setIsCloseVisible(true)
         }}
       />
-      <Modal.Container className="px-5 py-0 sm:px-10" placement="center" scroll="inside" size="full">
-        <Modal.Dialog
-          aria-label="开发者手记"
-          className="mx-auto flex min-h-dvh w-full max-w-225 items-center overflow-hidden border-0! bg-transparent! p-0! text-white shadow-none!"
-        >
-          <Modal.Body className="flex max-h-dvh w-full items-center overflow-y-auto p-0">
-            <article className="relative mx-auto flex max-w-180 flex-col gap-5 pr-15 text-[15px] leading-8 text-white/88 drop-shadow-[0_2px_12px_rgba(0,0,0,0.55)] sm:pr-16">
-              <button
-                aria-label="关闭开发者愿景"
-                aria-hidden={!isCloseVisible}
-                className={`absolute right-0 top-0 z-10 inline-flex size-10 items-center justify-center rounded-full border-0 bg-white/10 p-0 text-white outline-none transition-[opacity,transform,background-color] duration-700 ease-out focus-visible:ring-2 focus-visible:ring-white/60 ${isCloseVisible ? 'opacity-100 scale-100 hover:bg-white/20' : 'pointer-events-none scale-95 opacity-0'}`}
-                disabled={!isCloseVisible}
-                onClick={(event) => {
-                  event.stopPropagation()
-                  requestClose()
-                }}
-                tabIndex={isCloseVisible ? 0 : -1}
-                type="button"
-              >
-                <X className="size-4" />
-              </button>
-
-              <p
-                className="m-0 text-xl font-semibold leading-9 text-white sm:text-2xl sm:leading-10"
-              >
-                <TypewriterText
-                  charTimings={charTimings}
-                  currentTime={audioCurrentTime}
-                  parts={VISION_LINES[0]}
-                  startIndex={VISION_LINE_STARTS[0]}
-                />
+      {!canRunVision && (
+        <Modal.Container className="px-5" placement="center" scroll="inside" size="md">
+          <Modal.Dialog
+            aria-label={audioPreferenceLoaded ? '开发者愿景声音提示' : '开发者愿景声音设置加载中'}
+            className="border border-white/16 bg-zinc-950/78 text-white shadow-2xl backdrop-blur-xl"
+          >
+            <Modal.Header>
+              <Modal.Icon className="bg-white/12 text-white">
+                <Volume2 className="size-5" />
+              </Modal.Icon>
+              <Modal.Heading>{audioPreferenceLoaded ? '这段内容有声音' : '正在读取声音设置'}</Modal.Heading>
+            </Modal.Header>
+            <Modal.Body>
+              <p className="m-0 text-sm leading-6 text-white/72">
+                {audioPreferenceLoaded
+                  ? '请选择默认是否开启。之后在画面右上角也可以随时切换。'
+                  : '稍等一下。'}
               </p>
-
-              <p
-                className="m-0"
-              >
-                <TypewriterText
-                  charTimings={charTimings}
-                  currentTime={audioCurrentTime}
-                  parts={VISION_LINES[1]}
-                  startIndex={VISION_LINE_STARTS[1]}
-                />
-              </p>
-
-              {VISION_SECTIONS.map((section, index) => (
-                <p
-                  className="m-0"
-                  key={section.key}
+            </Modal.Body>
+            {audioPreferenceLoaded && (
+              <Modal.Footer className="flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  className="justify-center border-white/20 bg-white/10 text-white hover:bg-white/20"
+                  onPress={() => commitAudioPreference(false)}
+                  variant="outline"
                 >
-                  <TypewriterText
-                    charTimings={charTimings}
-                    currentTime={audioCurrentTime}
-                    parts={VISION_LINES[2 + index]}
-                    startIndex={VISION_LINE_STARTS[2 + index]}
-                  />
-                </p>
-              ))}
-
-              <blockquote
-                className="m-0 flex gap-3 border-l border-white/35 py-1 pl-4 text-white"
-              >
-                <Quote className="mt-1 size-4 shrink-0 text-white/80" aria-hidden="true" />
-                <div>
-                  <p className="m-0 font-semibold">
-                    <TypewriterText
-                      charTimings={charTimings}
-                      currentTime={audioCurrentTime}
-                      parts={VISION_LINES[5]}
-                      startIndex={VISION_LINE_STARTS[5]}
-                    />
-                  </p>
-                  <cite className="mt-1 block text-sm not-italic text-white/65">
-                    <TypewriterText
-                      charTimings={charTimings}
-                      currentTime={audioCurrentTime}
-                      parts={VISION_LINES[6]}
-                      startIndex={VISION_LINE_STARTS[6]}
-                    />
-                  </cite>
-                </div>
-              </blockquote>
-
-              <div
-                className="h-px w-full overflow-hidden bg-white/12"
-                aria-hidden="true"
-              >
-                <div
-                  ref={progressFillRef}
-                  className="h-full origin-left bg-linear-to-r from-white/35 via-cyan-100/85 to-fuchsia-200/80 will-change-transform"
-                  style={{ transform: 'translate3d(0, 0, 0) scaleX(0)' }}
-                />
-              </div>
-
-              <div
-                className="flex flex-col gap-3 pt-1 sm:flex-row sm:items-center sm:justify-between"
-                style={actionsStyle}
-              >
-                {showActions && (
-                  <>
-                    <p className="m-0 text-sm leading-6 text-white/72">想看项目动向和后续骚操作，进频道。</p>
-                    <div className="flex shrink-0 gap-2">
-                      <Button className="justify-center border-white/28 bg-white/12 text-white hover:bg-white/20" onPress={handleTelegram} variant="outline">
-                        <Send className="size-4" />
-                        Telegram 频道
-                      </Button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </article>
-          </Modal.Body>
-        </Modal.Dialog>
-      </Modal.Container>
+                  <VolumeX className="size-4" />
+                  静音观看
+                </Button>
+                <Button
+                  className="justify-center bg-white text-zinc-950 hover:bg-white/90"
+                  onPress={() => commitAudioPreference(true)}
+                  variant="primary"
+                >
+                  <Volume2 className="size-4" />
+                  开启声音
+                </Button>
+              </Modal.Footer>
+            )}
+          </Modal.Dialog>
+        </Modal.Container>
+      )}
     </Modal.Backdrop>
   )
 }

@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Home, MessageSquare, Database, Settings,
-  Download, Aperture, Network, FileAudio, Boxes,
+  Download, Aperture, Boxes,
   type LucideIcon
 } from 'lucide-react'
 import MacOSDock, { type DockApp } from '@/components/ui/mac-os-dock'
@@ -113,7 +113,6 @@ function BottomDock() {
     { id: 'home', name: '首页', icon: makeIcon(Home, 'linear-gradient(135deg, #4A90E2 0%, #2E6BC9 100%)') },
     { id: 'chat', name: '聊天查看', icon: makeIcon(MessageSquare, 'linear-gradient(135deg, #2ECC71 0%, #27AE60 100%)') },
     { id: 'moments', name: '朋友圈', icon: makeIcon(Aperture, 'linear-gradient(135deg, #FF7AA2 0%, #E84B7E 100%)') },
-    { id: 'transcription', name: '转文字助手', icon: makeIcon(FileAudio, 'linear-gradient(135deg, #5B6CFF 0%, #3F50E0 100%)') },
     { id: 'device-connect', name: '设备连接', icon: (
       <div className="relative w-full h-full p-1">
         <img src={WECHAT_LOGO_SRC} alt="微信" className="h-full w-full object-contain" />
@@ -122,7 +121,6 @@ function BottomDock() {
     ) },
     { id: 'export', name: '导出数据', icon: makeIcon(Download, 'linear-gradient(135deg, #1ABC9C 0%, #16A085 100%)') },
     { id: 'data-management', name: '数据管理', icon: makeIcon(Database, 'linear-gradient(135deg, #607D8B 0%, #455A64 100%)') },
-    { id: 'open-api', name: '开放接口', icon: makeIcon(Network, 'linear-gradient(135deg, #00BCD4 0%, #0097A7 100%)') },
     { id: 'mcp', name: 'MCP & Skills', icon: makeIcon(Boxes, 'linear-gradient(135deg, #EC407A 0%, #C2185B 100%)') },
     { id: 'settings', name: '设置', icon: makeIcon(Settings, 'linear-gradient(135deg, #6E7B85 0%, #424A52 100%)') },
   ]
@@ -132,11 +130,9 @@ function BottomDock() {
       case 'home': navigate('/home'); break
       case 'chat': void openChatWindow(); break
       case 'moments': void openMomentsWindow(); break
-      case 'transcription': navigate('/transcription-assistant'); break
       case 'device-connect': setDeviceConnectOpen(true); break
       case 'export': navigate('/export'); break
       case 'data-management': navigate('/data-management'); break
-      case 'open-api': navigate('/open-api'); break
       case 'mcp': navigate('/mcp'); break
       case 'settings': navigate('/settings'); break
     }

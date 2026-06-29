@@ -3,9 +3,9 @@ import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import type { UIMessage } from 'ai'
 import type { MainProcessContext } from '../context'
-import type { AgentProviderConfig, AgentProviderConfigOverride, AgentScope, AgentToolProfile } from '../../services/agent/types'
+import type { AgentProviderConfig, AgentProviderConfigOverride, AgentScope, AgentToolProfile, AgentUploadedMediaContext } from '../../services/agent/types'
 import type { CodeWorkspaceRef } from '../../services/agent/codeWorkspaceTypes'
-import type { PersonaNotes, PersonaRecord, PersonaTtsVoiceBinding } from '../../services/agent/persona/personaTypes'
+import type { PersonaCard, PersonaNotes, PersonaRecord, PersonaTtsVoiceBinding } from '../../services/agent/persona/personaTypes'
 
 /** 进行中的 agent 运行：runId → AbortController，用于取消。 */
 const agentAborters = new Map<string, AbortController>()
@@ -57,6 +57,29 @@ function localDateKey(date = new Date()): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
+function extractUploadedMediaContext(messages: UIMessage[] = []): AgentUploadedMediaContext | undefined {
+  let userMessage: UIMessage | undefined
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === 'user') {
+      userMessage = messages[i]
+      break
+    }
+  }
+  const parts = Array.isArray((userMessage as any)?.parts) ? (userMessage as any).parts as any[] : []
+  const images = parts
+    .filter((part) => part && part.type === 'file' && typeof part.url === 'string' && String(part.mediaType || '').startsWith('image/'))
+    .map((part, index) => ({
+      id: `upload-${index + 1}`,
+      mediaType: String(part.mediaType || 'image/png'),
+      filename: typeof part.filename === 'string' ? part.filename : undefined,
+      dataUrl: String(part.url || ''),
+      sizeBytes: Number.isFinite(Number(part.sizeBytes)) ? Number(part.sizeBytes) : undefined,
+    }))
+    .filter((item) => item.dataUrl.startsWith('data:image/'))
+    .slice(0, 6)
+  return images.length > 0 ? { images } : undefined
+}
+
 function sanitizePersonaVoiceForRenderer(ttsVoice: PersonaTtsVoiceBinding | null | undefined): PersonaTtsVoiceBinding | null {
   if (!ttsVoice) return null
   const { samplePath: _samplePath, ...safeVoice } = ttsVoice
@@ -68,6 +91,41 @@ function sanitizePersonaForRenderer(persona: PersonaRecord | null | undefined): 
   return {
     ...persona,
     ttsVoice: sanitizePersonaVoiceForRenderer(persona.ttsVoice),
+  }
+}
+
+function sanitizePersonaStyleText(value: unknown, maxLength: number): string {
+  return String(value ?? '').replace(/\r\n/g, '\n').trim().slice(0, maxLength)
+}
+
+function sanitizePersonaStyleList(value: unknown, maxItems = 20, maxItemLength = 80): string[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const items: string[] = []
+  for (const item of value) {
+    const text = sanitizePersonaStyleText(item, maxItemLength)
+    if (!text || seen.has(text)) continue
+    seen.add(text)
+    items.push(text)
+    if (items.length >= maxItems) break
+  }
+  return items
+}
+
+function sanitizePersonaSpeakingStylePatch(card: Partial<PersonaCard> | undefined, current: PersonaCard): PersonaCard {
+  const patch = card || {}
+  return {
+    tone: 'tone' in patch ? sanitizePersonaStyleText(patch.tone, 1200) : current.tone,
+    personalityTraits: 'personalityTraits' in patch
+      ? sanitizePersonaStyleList(patch.personalityTraits)
+      : current.personalityTraits,
+    catchphrases: 'catchphrases' in patch
+      ? sanitizePersonaStyleList(patch.catchphrases)
+      : current.catchphrases,
+    punctuationStyle: 'punctuationStyle' in patch ? sanitizePersonaStyleText(patch.punctuationStyle, 600) : current.punctuationStyle,
+    addressing: 'addressing' in patch ? sanitizePersonaStyleText(patch.addressing, 200) : current.addressing,
+    topics: 'topics' in patch ? sanitizePersonaStyleList(patch.topics) : current.topics,
+    ttsInstructions: 'ttsInstructions' in patch ? sanitizePersonaStyleText(patch.ttsInstructions, 1000) : current.ttsInstructions,
   }
 }
 
@@ -147,6 +205,75 @@ function errorToLogData(error: unknown): Record<string, unknown> {
     return { name: error.name, message: error.message, stack: error.stack }
   }
   return { message: String(error) }
+}
+
+const PERSONA_VOICE_MARKER_RE = /^[\[【]\s*(?:语音|voice)\s*[\]】]\s*/i
+
+function createPersonaVoiceCachePrewarmer(input: {
+  runId: string
+  sessionId: string
+  ttsVoice: PersonaTtsVoiceBinding | null
+  instructions?: string
+  signal?: AbortSignal
+  logger?: { warn?(category: string, message: string, data?: any): void }
+}): (chunk: unknown) => void {
+  const textById = new Map<string, string>()
+  const queued = new Set<string>()
+
+  const prewarm = (rawText: string) => {
+    const match = rawText.match(PERSONA_VOICE_MARKER_RE)
+    if (!match || input.signal?.aborted) return
+
+    const text = rawText.slice(match[0].length).trim()
+    if (!text) return
+
+    const key = `${input.ttsVoice?.provider || 'default'}:${input.ttsVoice?.model || ''}:${input.ttsVoice?.voice || ''}:${input.instructions || ''}:${text}`
+    if (queued.has(key)) return
+    queued.add(key)
+
+    void (async () => {
+      try {
+        const { resolvePersonaVoiceTtsConfig, synthesizeSpeech } = await import('../../services/ai/ttsService')
+        const configPatch = input.instructions ? { instructions: input.instructions } : undefined
+        const config = input.ttsVoice
+          ? resolvePersonaVoiceTtsConfig(input.ttsVoice, configPatch as any)
+          : configPatch
+        const result = await synthesizeSpeech(text, config ? { config: config as any, useCache: true, signal: input.signal } : { useCache: true, signal: input.signal })
+        if (!result.success) {
+          input.logger?.warn?.('Persona', '分身语音预合成失败', {
+            runId: input.runId,
+            sessionId: input.sessionId,
+            error: result.error,
+            errorCode: result.errorCode,
+          })
+        }
+      } catch (error) {
+        input.logger?.warn?.('Persona', '分身语音预合成异常', {
+          runId: input.runId,
+          sessionId: input.sessionId,
+          ...errorToLogData(error),
+        })
+      }
+    })()
+  }
+
+  return (chunk: unknown) => {
+    if (!chunk || typeof chunk !== 'object') return
+    const item = chunk as { type?: unknown; id?: unknown; delta?: unknown }
+    const type = String(item.type || '')
+    const id = typeof item.id === 'string' ? item.id : ''
+    if (!id) return
+
+    if (type === 'text-start') {
+      textById.set(id, '')
+    } else if (type === 'text-delta') {
+      textById.set(id, `${textById.get(id) || ''}${String(item.delta || '')}`)
+    } else if (type === 'text-end') {
+      const text = textById.get(id) || ''
+      textById.delete(id)
+      prewarm(text)
+    }
+  }
 }
 
 export function registerAiHandlers(ctx: MainProcessContext): void {
@@ -242,6 +369,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       const { agentProcessService } = await import('../../services/agent/agentProcessService')
       agentProcessService.setLogger(logger)
       const { agentProfileService } = await import('../../services/agent/agentProfileService')
+      const { sanitizeModelMessageToolPairs } = await import('../../services/agent/compaction')
       const { convertToModelMessages } = await import('ai')
       markPerf('加载主进程服务模块')
       stage = 'resolve_agent_profile'
@@ -253,6 +381,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
         toolProfile,
         codeWorkspace,
         includeMcpSkills: true,
+        queryText: initialLastUserText,
       }))
       const providerConfig = profile.providerConfig
       markPerf('解析 Agent Profile', `MCP ${profile.mcpTools.length} 个 / 技能 ${profile.skills.length} 个`)
@@ -261,7 +390,8 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       const uiMessages = shouldStripProviderMetadata(providerConfig)
         ? stripUiMessageProviderMetadata(payload.messages)
         : payload.messages
-      const messages = await convertToModelMessages(uiMessages)
+      const uploadedMediaContext = extractUploadedMediaContext(uiMessages)
+      const messages = sanitizeModelMessageToolPairs(await convertToModelMessages(uiMessages))
       markPerf('整理消息', `${messages.length} 条`)
       stage = 'inject_tools_and_skills'
       sendPrepProgress()
@@ -320,6 +450,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
           messages,
           providerConfig,
           scope: profile.scope,
+          uploadedMediaContext,
           mcpTools,
           skills,
           planMode: payload.planMode === true,
@@ -701,28 +832,43 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       const { messageVectorService } = await import('../../services/search/messageVectorService')
       const cfg = getEmbeddingConfig()
       const store = messageVectorService.getSessionVectorStoreInfo(sessionId)
-      return { success: true, enabled: messageVectorService.isReady(cfg), count: store.count, store }
+      return { success: true, enabled: messageVectorService.isReady(cfg), mediaEnabled: messageVectorService.isMediaReady(cfg), count: store.count, mediaCount: store.mediaCount || 0, store }
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) }
     }
   })
 
   // 主动为某会话构建向量（懒构建的手动触发；增量，已建则只补新增）
-  ipcMain.handle('embedding:buildSession', async (event, sessionId: string) => {
+  ipcMain.handle('embedding:buildSession', async (event, sessionId: string, options?: { target?: 'all' | 'text' | 'image' }) => {
     try {
       const { getEmbeddingConfig } = await import('../../services/ai/embeddingService')
       const { messageVectorService } = await import('../../services/search/messageVectorService')
       const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
       const sender = event.sender
       const cfg = getEmbeddingConfig()
+      const target = options?.target === 'text' || options?.target === 'image' ? options.target : 'all'
       if (!messageVectorService.isReady(cfg)) {
         return { success: false, error: '未启用或未配置嵌入模型（请先在设置 → 嵌入中配置并启用）' }
       }
+      if (target === 'image' && !messageVectorService.isMediaReady(cfg)) {
+        return { success: false, error: '图片向量化未开启（请先在设置 → 嵌入中开启图片向量化）' }
+      }
       await refreshResolvedProxyUrl()
-      const indexed = await messageVectorService.ensureSessionVectors(sessionId, cfg, undefined, (progress) => {
-        if (!sender.isDestroyed()) sender.send('embedding:buildProgress', progress)
-      })
-      return { success: true, indexed }
+      const currentStore = messageVectorService.getSessionVectorStoreInfo(sessionId)
+      let indexed = currentStore.count
+      let mediaIndexed = currentStore.mediaCount || 0
+      if (target === 'all' || target === 'text') {
+        indexed = await messageVectorService.ensureSessionVectors(sessionId, cfg, undefined, (progress) => {
+          if (!sender.isDestroyed()) sender.send('embedding:buildProgress', progress)
+        })
+      }
+      if ((target === 'all' && messageVectorService.isMediaReady(cfg)) || target === 'image') {
+        mediaIndexed = await messageVectorService.ensureSessionMediaVectors(sessionId, cfg, undefined, (progress) => {
+          if (!sender.isDestroyed()) sender.send('embedding:buildProgress', progress)
+        })
+      }
+      const store = messageVectorService.getSessionVectorStoreInfo(sessionId)
+      return { success: true, indexed: store.count || indexed, mediaIndexed: store.mediaCount || mediaIndexed }
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) }
     }
@@ -811,6 +957,41 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
     try {
       const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
       return { success: true, diaries: memoryDatabase.listDiaries(limit) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('memory:listBankNotes', async (_event, kind: string, limit?: number) => {
+    try {
+      const safeKind = kind === 'tasks' ? 'tasks' : kind === 'notes' ? 'notes' : null
+      if (!safeKind) return { success: false, error: '无效的笔记类型' }
+      const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
+      return { success: true, notes: memoryDatabase.listBankNotes(safeKind, limit) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('memory:readBankNote', async (_event, kind: string, fileName: string) => {
+    try {
+      const safeKind = kind === 'tasks' ? 'tasks' : kind === 'notes' ? 'notes' : null
+      if (!safeKind) return { success: false, error: '无效的笔记类型' }
+      const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
+      const note = memoryDatabase.readBankNote(safeKind, String(fileName || ''))
+      return note ? { success: true, note } : { success: false, error: '未找到该笔记' }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('memory:deleteBankNote', async (_event, kind: string, fileName: string) => {
+    try {
+      const safeKind = kind === 'tasks' ? 'tasks' : kind === 'notes' ? 'notes' : null
+      if (!safeKind) return { success: false, error: '无效的笔记类型' }
+      const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
+      const deleted = memoryDatabase.deleteBankNote(safeKind, String(fileName || ''))
+      return deleted ? { success: true } : { success: false, error: '未找到该笔记' }
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) }
     }
@@ -985,10 +1166,11 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
 
       const { resolveProviderConfig } = await import('../../services/agent/resolveProviderConfig')
       const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
+      const { sanitizeModelMessageToolPairs } = await import('../../services/agent/compaction')
       const { convertToModelMessages } = await import('ai')
       const providerConfig = resolveProviderConfig()
       await refreshAgentRunProxyCached(refreshResolvedProxyUrl)
-      const messages = await convertToModelMessages(payload.messages || [])
+      const messages = sanitizeModelMessageToolPairs(await convertToModelMessages(payload.messages || []))
 
       // 导演笔记（纠正规则 + 分身对话记忆）：读取失败不阻塞聊天
       let notes: PersonaNotes | undefined
@@ -999,6 +1181,18 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
 
       const { agentProcessService } = await import('../../services/agent/agentProcessService')
       agentProcessService.setLogger(logger)
+      const prewarmPersonaVoice = createPersonaVoiceCachePrewarmer({
+        runId,
+        sessionId,
+        ttsVoice: persona.ttsVoice,
+        instructions: persona.card.ttsInstructions,
+        signal: aborter.signal,
+        logger,
+      })
+      const sendPersonaChunk = (chunk: unknown) => {
+        send(chunk)
+        prewarmPersonaVoice(chunk)
+      }
       await agentProcessService.personaChat(
         {
           providerConfig,
@@ -1015,7 +1209,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
           },
           messages,
         },
-        send,
+        sendPersonaChunk,
         sendProgress,
         aborter.signal,
       )
@@ -1050,6 +1244,25 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
     try {
       const { personaStore } = await import('../../services/agent/persona/personaStore')
       return { success: true, personas: personaStore.list().map((persona) => sanitizePersonaForRenderer(persona)) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('persona:updateSpeakingStyle', async (_event, payload: { sessionId: string; card?: Partial<PersonaCard> }) => {
+    try {
+      const sessionId = String(payload?.sessionId || '').trim()
+      if (!sessionId) return { success: false, error: '缺少 sessionId' }
+
+      const { personaStore } = await import('../../services/agent/persona/personaStore')
+      const current = personaStore.get(sessionId)
+      if (!current) return { success: false, error: '尚未克隆该好友' }
+
+      const updated = personaStore.patch(sessionId, {
+        card: sanitizePersonaSpeakingStylePatch(payload?.card, current.card),
+      })
+      if (!updated) return { success: false, error: '保存说话方式失败' }
+      return { success: true, persona: sanitizePersonaForRenderer(updated) }
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) }
     }

@@ -8,9 +8,20 @@ type TitleBarOverlayState = {
 
 const titleBarOverlayStates = new WeakMap<BrowserWindow, TitleBarOverlayState>()
 
+function shouldForceHideMacWindowButtons(win: BrowserWindow): boolean {
+  const url = win.webContents.getURL()
+  return url.includes('#/splash') || url.includes('#/pet-window')
+}
+
 function applyTitleBarOverlay(win: BrowserWindow, state: TitleBarOverlayState) {
   try {
     if (process.platform === 'darwin') {
+      if (shouldForceHideMacWindowButtons(win)) {
+        win.setWindowButtonVisibility(false)
+        win.setWindowButtonPosition({ x: -100, y: -100 })
+        return
+      }
+
       win.setWindowButtonVisibility(!state.hidden)
       return
     }
@@ -26,7 +37,12 @@ function applyTitleBarOverlay(win: BrowserWindow, state: TitleBarOverlayState) {
 }
 
 export function registerWindowHandlers(ctx: MainProcessContext): void {
-  ipcMain.on('window:splashReady', () => {
+  ipcMain.on('window:splashReady', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win && process.platform === 'darwin' && shouldForceHideMacWindowButtons(win)) {
+      win.setWindowButtonVisibility(false)
+      win.setWindowButtonPosition({ x: -100, y: -100 })
+    }
     ctx.setSplashReady(true)
   })
 
@@ -117,6 +133,11 @@ export function registerWindowHandlers(ctx: MainProcessContext): void {
     ctx.getWindowManager().openBrowserWindow(url, title)
   })
 
+  ipcMain.handle('window:openSkillPreviewWindow', (_, skillName: string) => {
+    ctx.getWindowManager().openSkillPreviewWindow(skillName)
+    return true
+  })
+
   ipcMain.handle('window:openChatHistoryWindow', (_, sessionId: string, messageId: number) => {
     ctx.getWindowManager().openChatHistoryWindow(sessionId, messageId)
     return true
@@ -151,6 +172,11 @@ export function registerWindowHandlers(ctx: MainProcessContext): void {
 
   ipcMain.handle('window:openPersonaChatWindow', async (_event, sessionId: string) => {
     ctx.getWindowManager().openPersonaChatWindow(String(sessionId || '').trim())
+    return true
+  })
+
+  ipcMain.handle('window:openPosterStyleWindow', async () => {
+    ctx.getWindowManager().openPosterStyleWindow()
     return true
   })
 

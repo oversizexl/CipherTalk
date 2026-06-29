@@ -137,6 +137,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   skillManager: {
     list: () => ipcRenderer.invoke('skillManager:list') as Promise<Array<{ name: string; version: string; description: string; builtin: boolean }>>,
     readContent: (skillName: string) => ipcRenderer.invoke('skillManager:readContent', skillName) as Promise<{ success: boolean; content?: string; error?: string }>,
+    listFiles: (skillName: string) => ipcRenderer.invoke('skillManager:listFiles', skillName) as Promise<{ success: boolean; files?: Array<{ path: string; name: string; type: 'file' | 'dir'; size?: number; children?: Array<{ path: string; name: string; type: 'file' | 'dir'; size?: number }> }>; truncated?: boolean; error?: string }>,
+    readFile: (skillName: string, filePath: string) => ipcRenderer.invoke('skillManager:readFile', skillName, filePath) as Promise<{ success: boolean; path?: string; content?: string; size?: number; binary?: boolean; error?: string }>,
     updateContent: (skillName: string, content: string) => ipcRenderer.invoke('skillManager:updateContent', skillName, content) as Promise<{ success: boolean; error?: string }>,
     exportZip: (skillName: string) => ipcRenderer.invoke('skillManager:exportZip', skillName) as Promise<{ success: boolean; outputPath?: string; fileName?: string; version?: string; error?: string }>,
     importZip: (zipPath: string) => ipcRenderer.invoke('skillManager:importZip', zipPath) as Promise<{ success: boolean; skillName?: string; error?: string }>,
@@ -223,6 +225,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('persona:list') as Promise<{ success: boolean; personas?: unknown[]; error?: string }>,
     build: (payload: { sessionId: string; displayName?: string }) =>
       ipcRenderer.invoke('persona:build', payload) as Promise<{ success: boolean; persona?: unknown; error?: string }>,
+    updateSpeakingStyle: (payload: { sessionId: string; card: unknown }) =>
+      ipcRenderer.invoke('persona:updateSpeakingStyle', payload) as Promise<{ success: boolean; persona?: unknown; error?: string }>,
     cloneVoice: (payload: { sessionId: string; displayName?: string }) =>
       ipcRenderer.invoke('persona:cloneVoice', payload) as Promise<{ success: boolean; persona?: unknown; voice?: unknown; warning?: string; error?: string }>,
     exportVoiceSample: (payload: { sessionId: string; displayName?: string; outputPath: string }) =>
@@ -275,6 +279,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('memory:list', opts) as Promise<{ success: boolean; items?: unknown[]; stats?: { itemCount: number }; error?: string }>,
     listDiaries: (limit?: number) =>
       ipcRenderer.invoke('memory:listDiaries', limit) as Promise<{ success: boolean; diaries?: unknown[]; error?: string }>,
+    listBankNotes: (kind: 'tasks' | 'notes', limit?: number) =>
+      ipcRenderer.invoke('memory:listBankNotes', kind, limit) as Promise<{ success: boolean; notes?: unknown[]; error?: string }>,
+    readBankNote: (kind: 'tasks' | 'notes', fileName: string) =>
+      ipcRenderer.invoke('memory:readBankNote', kind, fileName) as Promise<{ success: boolean; note?: unknown; error?: string }>,
+    deleteBankNote: (kind: 'tasks' | 'notes', fileName: string) =>
+      ipcRenderer.invoke('memory:deleteBankNote', kind, fileName) as Promise<{ success: boolean; error?: string }>,
     readDiary: (date: string) =>
       ipcRenderer.invoke('memory:readDiary', date) as Promise<{ success: boolean; diary?: unknown; error?: string }>,
     deleteDiary: (date: string) =>
@@ -306,8 +316,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getConfig: () => ipcRenderer.invoke('embedding:getConfig') as Promise<{ success: boolean; config?: unknown; error?: string }>,
     setConfig: (patch: unknown) => ipcRenderer.invoke('embedding:setConfig', patch) as Promise<{ success: boolean; config?: unknown; error?: string }>,
     test: (cfg: unknown) => ipcRenderer.invoke('embedding:test', cfg) as Promise<{ success: boolean; dimension?: number; error?: string }>,
-    sessionStatus: (sessionId: string) => ipcRenderer.invoke('embedding:sessionStatus', sessionId) as Promise<{ success: boolean; enabled?: boolean; count?: number; store?: unknown; error?: string }>,
-    buildSession: (sessionId: string) => ipcRenderer.invoke('embedding:buildSession', sessionId) as Promise<{ success: boolean; indexed?: number; error?: string }>,
+    sessionStatus: (sessionId: string) => ipcRenderer.invoke('embedding:sessionStatus', sessionId) as Promise<{ success: boolean; enabled?: boolean; mediaEnabled?: boolean; count?: number; mediaCount?: number; store?: unknown; error?: string }>,
+    buildSession: (sessionId: string, options?: { target?: 'all' | 'text' | 'image' }) => ipcRenderer.invoke('embedding:buildSession', sessionId, options) as Promise<{ success: boolean; indexed?: number; mediaIndexed?: number; error?: string }>,
     onBuildProgress: (callback: (progress: unknown) => void): (() => void) => {
       const listener = (_e: unknown, progress: unknown) => callback(progress)
       ipcRenderer.on('embedding:buildProgress', listener)
@@ -420,13 +430,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
-  // HTTP API
-  httpApi: {
-    getStatus: () => ipcRenderer.invoke('httpApi:getStatus'),
-    applySettings: (payload: { enabled: boolean; port: number; token: string; listenMode: 'localhost' | 'lan' }) => ipcRenderer.invoke('httpApi:applySettings', payload),
-    restart: () => ipcRenderer.invoke('httpApi:restart')
-  },
-
   // 窗口控制
   window: {
     minimize: () => ipcRenderer.send('window:minimize'),
@@ -435,9 +438,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openChatWindow: () => ipcRenderer.invoke('window:openChatWindow'),
     openMomentsWindow: (filterUsername?: string) => ipcRenderer.invoke('window:openMomentsWindow', filterUsername),
     openPersonaChatWindow: (sessionId: string) => ipcRenderer.invoke('window:openPersonaChatWindow', sessionId),
+    openPosterStyleWindow: () => ipcRenderer.invoke('window:openPosterStyleWindow'),
     onMomentsFilterUser: (callback: (username: string) => void) => {
       ipcRenderer.on('moments:filterUser', (_, username) => callback(username))
       return () => ipcRenderer.removeAllListeners('moments:filterUser')
+    },
+    onNavigate: (callback: (route: string) => void) => {
+      const listener = (_: unknown, route: string) => callback(route)
+      ipcRenderer.on('window:navigate', listener)
+      return () => ipcRenderer.removeListener('window:navigate', listener)
     },
     openAgreementWindow: () => ipcRenderer.invoke('window:openAgreementWindow'),
     openPurchaseWindow: () => ipcRenderer.invoke('window:openPurchaseWindow'),
@@ -454,6 +463,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ) => ipcRenderer.invoke('window:openImageViewerWindow', imagePath, liveVideoPath, imageList, options),
     openVideoPlayerWindow: (videoPath: string, videoWidth?: number, videoHeight?: number) => ipcRenderer.invoke('window:openVideoPlayerWindow', videoPath, videoWidth, videoHeight),
     openBrowserWindow: (url: string, title?: string) => ipcRenderer.invoke('window:openBrowserWindow', url, title),
+    openSkillPreviewWindow: (skillName: string) => ipcRenderer.invoke('window:openSkillPreviewWindow', skillName) as Promise<boolean>,
     openChatHistoryWindow: (sessionId: string, messageId: number) => ipcRenderer.invoke('window:openChatHistoryWindow', sessionId, messageId),
     resizeToFitVideo: (videoWidth: number, videoHeight: number) => ipcRenderer.invoke('window:resizeToFitVideo', videoWidth, videoHeight),
     resizeContent: (width: number, height: number) => ipcRenderer.invoke('window:resizeContent', width, height),
@@ -571,6 +581,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('image:decrypt', payload),
     resolveCache: (payload: { sessionId?: string; imageMd5?: string; imageDatName?: string; createTime?: number }) =>
       ipcRenderer.invoke('image:resolveCache', payload),
+    prewarm: (payloads: Array<{ sessionId?: string; imageMd5?: string; imageDatName?: string; createTime?: number }>) =>
+      ipcRenderer.invoke('image:prewarm', payloads),
+    batchDecrypt: (payloads: Array<{ sessionId?: string; imageMd5?: string; imageDatName?: string; createTime?: number }>) =>
+      ipcRenderer.invoke('image:batchDecrypt', payloads),
+    onBatchDecryptProgress: (callback: (data: { current: number; total: number; successCount: number; failCount: number; cacheHits: number; decrypted: number; skipped: number }) => void) => {
+      const listener = (_: Electron.IpcRendererEvent, data: { current: number; total: number; successCount: number; failCount: number; cacheHits: number; decrypted: number; skipped: number }) => callback(data)
+      ipcRenderer.on('image:batchDecryptProgress', listener)
+      return () => { ipcRenderer.removeListener('image:batchDecryptProgress', listener) }
+    },
     onUpdateAvailable: (callback: (data: { cacheKey: string; imageMd5?: string; imageDatName?: string }) => void) => {
       ipcRenderer.on('image:updateAvailable', (_, data) => callback(data))
       return () => ipcRenderer.removeAllListeners('image:updateAvailable')
@@ -742,8 +761,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     downloadModel: () => ipcRenderer.invoke('stt:downloadModel'),
     cancelDownloadModel: () => ipcRenderer.invoke('stt:cancelDownloadModel'),
     transcribe: (wavBase64: string, sessionId: string, createTime: number, force?: boolean) => ipcRenderer.invoke('stt:transcribe', wavBase64, sessionId, createTime, force),
-    transcribeAudioFile: (filePath: string) => ipcRenderer.invoke('stt:transcribeAudioFile', filePath),
-    testOnlineConfig: (overrides?: { provider?: 'openai-compatible' | 'aliyun-qwen-asr' | 'custom'; apiKey?: string; baseURL?: string; model?: string; language?: string; timeoutMs?: number }) =>
+    testOnlineConfig: (overrides?: { provider?: 'openai-compatible' | 'aliyun-qwen-asr' | 'qianwen-cloud' | 'volcano-doubao' | 'custom'; apiKey?: string; baseURL?: string; model?: string; language?: string; timeoutMs?: number }) =>
       ipcRenderer.invoke('stt-online:test-config', overrides),
     onDownloadProgress: (callback: (progress: { modelName: string; downloadedBytes: number; totalBytes?: number; percent?: number }) => void) => {
       ipcRenderer.on('stt:downloadProgress', (_, progress) => callback(progress))

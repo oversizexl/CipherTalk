@@ -2,13 +2,13 @@
  * AI Agent 对话页（Phase C）——使用 AI SDK 的 useChat + AI Elements 组件。
  * 数据：useChat 走 IpcChatTransport（IPC → AI 子进程 → 流式 UIMessageChunk）。
  */
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode, type UIEvent } from 'react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type MutableRefObject, type ReactNode, type Ref, type UIEvent } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { isToolUIPart, type ChatStatus, type UIMessage } from 'ai'
-import { AlertDialog, Button as HeroButton, ButtonGroup, Dropdown, Header, Input, Label, Modal, Separator, Surface, Switch, Table, TextField, Toolbar, Tooltip } from '@heroui/react'
-import { AtSign, BarChart3, Braces, Brain, CheckIcon, ChevronDown, Clock3, Code2, Copy, FileText, Globe, Hand, History, Image as ImageIcon, Info, Link2, ListChecks, Monitor, PanelLeft, PenLine, Play, Quote, RefreshCcw, Search, ShieldAlert, ShieldCheck, Slash, SquarePen, Table2, Terminal, Trash2, Users, Volume2, Wrench, X, Sparkles, type LucideIcon } from 'lucide-react'
+import { AlertDialog, Button as HeroButton, ButtonGroup, Dropdown, Header, Input, Label, Modal, SearchField, Separator, Spinner, Surface, Switch, Table, TextField, Toolbar, Tooltip, toast } from '@heroui/react'
+import { AtSign, BarChart3, Braces, Brain, CheckIcon, ChevronDown, Clock3, Code2, Copy, Download, FileText, Globe, Hand, History, Image as ImageIcon, Info, Link2, ListChecks, Monitor, PanelLeft, PenLine, Play, Quote, RefreshCcw, Search, Share2, ShieldAlert, ShieldCheck, Slash, SquarePen, Table2, Terminal, Trash2, Users, Volume2, VolumeX, Wrench, X, Sparkles, type LucideIcon } from 'lucide-react'
+import { toPng } from 'dom-to-image-more'
 import { Sources, SourcesContent, SourcesTrigger } from '@/components/ai-elements/sources'
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
 import {
   Conversation,
   ConversationAutoScroll,
@@ -34,6 +34,7 @@ import {
   PromptInputTextarea,
   PromptInputTools,
   type PromptInputMessage,
+  type PromptInputControllerProps,
   usePromptInputController,
 } from '@/components/ai-elements/prompt-input'
 import { ImagePreview, type ImagePreviewOriginRect } from '@/components/ImagePreview'
@@ -911,6 +912,11 @@ const TOOL_LABELS: Record<string, string> = {
   moments_stats: '朋友圈统计',
   web_search: '联网搜索',
   generate_image: '生成图片',
+  search_moment_media: '找朋友圈图片',
+  search_media: '找历史媒体',
+  search_similar_media: '以图找图',
+  inspect_media_image: '识别历史图片',
+  send_media_from_history: '发送历史媒体',
   search_stickers: '翻表情包',
   send_sticker: '发表情包',
   send_random_image: '抽一张图片',
@@ -1651,6 +1657,34 @@ type AgentConversationLoaded = AgentConversationRecord & {
   messages: UIMessage[]
 }
 
+const ACTIVE_AGENT_CONVERSATION_KEY = 'ciphertalk.agent.activeConversationId'
+const NEW_AGENT_CONVERSATION_MARKER = 'new'
+const STREAMING_AGENT_SAVE_INTERVAL_MS = 2000
+
+function readStoredActiveAgentConversation(): number | 'new' | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.sessionStorage.getItem(ACTIVE_AGENT_CONVERSATION_KEY)
+    if (raw === NEW_AGENT_CONVERSATION_MARKER) return 'new'
+    const id = Number(raw)
+    return Number.isFinite(id) && id > 0 ? id : null
+  } catch {
+    return null
+  }
+}
+
+function storeActiveAgentConversation(id: number | null): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.sessionStorage.setItem(
+      ACTIVE_AGENT_CONVERSATION_KEY,
+      id && id > 0 ? String(id) : NEW_AGENT_CONVERSATION_MARKER,
+    )
+  } catch {
+    // 某些受限渲染上下文可能禁用 sessionStorage。
+  }
+}
+
 function MentionAvatar({ target, className = 'size-7' }: { target: MentionTarget; className?: string }) {
   const [avatarUrl, setAvatarUrl] = useState(target.avatarUrl || '')
   const [imageError, setImageError] = useState(false)
@@ -2045,21 +2079,21 @@ function MessageSources({
         {items.map((it, index) => {
           const senderName = senderNameOf(it)
           return (
-            <HoverCard closeDelay={80} key={it.id} openDelay={120}>
-              <HoverCardTrigger asChild>
+            <Tooltip closeDelay={80} delay={120} key={it.id}>
+              <Tooltip.Trigger>
                 <span className="inline-flex max-w-40 items-center gap-1 rounded-full border border-border/60 bg-card/60 px-2 py-0.5 text-[11px] text-muted-foreground">
                   <Quote className="size-3 shrink-0 opacity-70" />
                   <span className="shrink-0">{index + 1}</span>
                   <span className="truncate">{senderName}</span>
                 </span>
-              </HoverCardTrigger>
-              <HoverCardContent align="start" className="w-80 text-xs" side="top">
+              </Tooltip.Trigger>
+              <Tooltip.Content className="w-80 text-xs" placement="top start">
                 <div className="mb-1 font-medium text-[11px] text-muted-foreground">
                   {[senderName, it.time].filter(Boolean).join(' · ')}
                 </div>
                 <div className="max-h-40 overflow-auto whitespace-pre-wrap text-foreground">{it.text}</div>
-              </HoverCardContent>
-            </HoverCard>
+              </Tooltip.Content>
+            </Tooltip>
           )
         })}
       </SourcesContent>
@@ -2259,6 +2293,25 @@ function attachToolElapsedToMessages(messages: UIMessage[], toolElapsedByKey: Re
   return changed ? next : messages
 }
 
+function prepareAgentMessagesForPersist(
+  messages: UIMessage[],
+  subAgentProgress: AgentProgressEvent[],
+  toolElapsedByKey: Record<string, number>,
+): UIMessage[] {
+  return attachToolElapsedToMessages(
+    attachSubAgentProgressToLastAssistant(messages, subAgentProgress),
+    toolElapsedByKey,
+  )
+}
+
+function signatureAgentMessages(messages: UIMessage[]): string {
+  try {
+    return JSON.stringify(messages)
+  } catch {
+    return `${messages.length}:${Date.now()}`
+  }
+}
+
 function finiteNumber(value: unknown): number | undefined {
   const n = Number(value)
   return Number.isFinite(n) ? n : undefined
@@ -2419,6 +2472,250 @@ function messageTextOf(message: UIMessage): string {
     .trim()
 }
 
+const AGENT_SHARE_MAX_MESSAGES = 40
+const AGENT_SHARE_MAX_CHARS = 12000
+
+type AgentShareMessage = {
+  id: string
+  role: 'user' | 'assistant'
+  text: string
+}
+
+type AgentSharePreviewData = {
+  generatedAt: number
+  messages: AgentShareMessage[]
+  title: string
+  truncated: boolean
+}
+
+function agentShareMessageText(message: UIMessage): string {
+  const rawText = messageTextOf(message)
+  if (!rawText) return ''
+  const metadata = (message as { metadata?: AgentMessageMetadata }).metadata
+  return message.role === 'assistant' && metadata?.planMode
+    ? stripPlanControlMarkers(rawText)
+    : rawText
+}
+
+function buildAgentSharePreviewData(conversation: AgentConversationLoaded): AgentSharePreviewData {
+  const allMessages: AgentShareMessage[] = []
+  for (const message of conversation.messages) {
+    if (message.role !== 'user' && message.role !== 'assistant') continue
+    const text = agentShareMessageText(message)
+    if (!text) continue
+    allMessages.push({
+      id: message.id,
+      role: message.role,
+      text,
+    })
+  }
+
+  let charCount = 0
+  const selectedReversed: AgentShareMessage[] = []
+  let truncated = allMessages.length > AGENT_SHARE_MAX_MESSAGES
+  for (let i = allMessages.length - 1; i >= 0; i -= 1) {
+    const message = allMessages[i]
+    const nextCount = charCount + message.text.length
+    if (selectedReversed.length >= AGENT_SHARE_MAX_MESSAGES || (selectedReversed.length > 0 && nextCount > AGENT_SHARE_MAX_CHARS)) {
+      truncated = true
+      break
+    }
+    selectedReversed.push(message)
+    charCount = nextCount
+  }
+
+  return {
+    generatedAt: Date.now(),
+    messages: selectedReversed.reverse(),
+    title: conversation.title || '新对话',
+    truncated,
+  }
+}
+
+function sanitizeAgentShareFileName(value: string): string {
+  const normalized = value
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    .replace(/\s+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+  return normalized || 'Agent'
+}
+
+function formatAgentShareFileDate(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    '-',
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+  ].join('')
+}
+
+function formatAgentShareDisplayDate(value: number): string {
+  return new Date(value).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function AgentShareCard({ data, captureRef }: { data: AgentSharePreviewData; captureRef?: Ref<HTMLDivElement> }) {
+  const cardStyle: CSSProperties = {
+    background: '#f8fafc',
+    borderRadius: 24,
+    boxSizing: 'border-box',
+    color: '#111827',
+    fontFamily: 'Inter, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
+    letterSpacing: 0,
+    overflow: 'hidden',
+    width: 720,
+  }
+  const headerStyle: CSSProperties = {
+    background: '#ffffff',
+    borderBottom: '1px solid #e5e7eb',
+    boxSizing: 'border-box',
+    padding: '28px 32px',
+  }
+  const headerRowStyle: CSSProperties = {
+    alignItems: 'center',
+    display: 'flex',
+    gap: 20,
+    justifyContent: 'space-between',
+  }
+  const titleStyle: CSSProperties = {
+    color: '#0f172a',
+    fontSize: 28,
+    fontWeight: 650,
+    lineHeight: 1.22,
+    margin: '8px 0 0',
+    overflowWrap: 'anywhere',
+  }
+  const logoStyle: CSSProperties = {
+    alignItems: 'center',
+    background: '#111827',
+    borderRadius: 16,
+    color: '#ffffff',
+    display: 'flex',
+    flexShrink: 0,
+    fontSize: 20,
+    fontWeight: 700,
+    height: 52,
+    justifyContent: 'center',
+    width: 52,
+  }
+  const bodyStyle: CSSProperties = {
+    boxSizing: 'border-box',
+    padding: '28px 32px',
+  }
+  const footerStyle: CSSProperties = {
+    alignItems: 'center',
+    background: '#ffffff',
+    borderTop: '1px solid #e5e7eb',
+    boxSizing: 'border-box',
+    color: '#64748b',
+    display: 'flex',
+    fontSize: 12,
+    justifyContent: 'space-between',
+    padding: '16px 32px',
+  }
+
+  return (
+    <div
+      ref={captureRef}
+      style={cardStyle}
+    >
+      <div style={headerStyle}>
+        <div style={headerRowStyle}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ color: '#64748b', fontSize: 13, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+              CipherTalk · Agent 分享
+            </div>
+            <h2 style={titleStyle}>{data.title}</h2>
+          </div>
+          <div style={logoStyle}>知</div>
+        </div>
+        <div style={{ color: '#64748b', fontSize: 13, marginTop: 16 }}>{formatAgentShareDisplayDate(data.generatedAt)}</div>
+      </div>
+
+      <div style={bodyStyle}>
+        {data.truncated && (
+          <div style={{
+            background: '#fffbeb',
+            border: '1px solid #fde68a',
+            borderRadius: 14,
+            color: '#92400e',
+            fontSize: 13,
+            marginBottom: 20,
+            padding: '12px 16px',
+          }}>
+            内容较长，已截取最近部分
+          </div>
+        )}
+        {data.messages.length > 0 ? data.messages.map((message) => {
+          const isUser = message.role === 'user'
+          const alignStyle: CSSProperties = {
+            display: 'flex',
+            justifyContent: isUser ? 'flex-end' : 'flex-start',
+            marginTop: 20,
+          }
+          const wrapStyle: CSSProperties = {
+            maxWidth: 560,
+            textAlign: isUser ? 'right' : 'left',
+          }
+          const nameStyle: CSSProperties = {
+            color: '#64748b',
+            fontSize: 12,
+            fontWeight: 600,
+            marginBottom: 6,
+          }
+          const bubbleStyle: CSSProperties = {
+            background: isUser ? '#111827' : '#ffffff',
+            border: isUser ? 'none' : '1px solid #e5e7eb',
+            borderRadius: isUser ? '18px 6px 18px 18px' : '6px 18px 18px 18px',
+            boxSizing: 'border-box',
+            color: isUser ? '#ffffff' : '#111827',
+            fontSize: 15,
+            lineHeight: '27px',
+            overflowWrap: 'anywhere',
+            padding: '12px 16px',
+            textAlign: 'left',
+            whiteSpace: 'pre-wrap',
+          }
+          return (
+            <div key={message.id} style={alignStyle}>
+              <div style={wrapStyle}>
+                <div style={nameStyle}>{isUser ? '我' : '知微'}</div>
+                <div style={bubbleStyle}>{message.text}</div>
+              </div>
+            </div>
+          )
+        }) : (
+          <div style={{
+            background: '#ffffff',
+            border: '1px solid #e5e7eb',
+            borderRadius: 16,
+            color: '#64748b',
+            fontSize: 14,
+            padding: '32px 16px',
+            textAlign: 'center',
+          }}>
+            这段对话没有可分享的文本内容
+          </div>
+        )}
+      </div>
+
+      <div style={footerStyle}>
+        <span>由 CipherTalk 生成</span>
+        <span>{data.messages.length} 条消息</span>
+      </div>
+    </div>
+  )
+}
+
 function MessageUsageStats({
   canRegenerate,
   metadata,
@@ -2486,6 +2783,71 @@ function MessageUsageStats({
       </div>
     </div>
   )
+}
+
+function UserMessageActions({
+  canRetry,
+  copied,
+  messageText,
+  retrying,
+  onCopy,
+  onEdit,
+  onRetry,
+}: {
+  canRetry: boolean
+  copied: boolean
+  messageText: string
+  retrying: boolean
+  onCopy: () => void
+  onEdit: () => void
+  onRetry: () => void
+}) {
+  if (!messageText) return null
+
+  return (
+    <div className="-mt-1 flex justify-end opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      <MessageActions aria-label="用户消息操作" className="rounded-(--agent-radius,12px) bg-background/80 px-1 py-0.5 shadow-xs ring-1 ring-border/60 backdrop-blur">
+        <MessageAction
+          label="复制"
+          onClick={onCopy}
+          tooltip={copied ? '已复制' : '复制'}
+        >
+          {copied ? <CheckIcon className="size-3.5" /> : <Copy className="size-3.5" />}
+        </MessageAction>
+        <MessageAction
+          disabled={!canRetry || retrying}
+          label="重试"
+          onClick={onRetry}
+          tooltip="重试"
+        >
+          <RefreshCcw className={`size-3.5 ${retrying ? 'animate-spin' : ''}`} />
+        </MessageAction>
+        <MessageAction
+          disabled={retrying}
+          label="编辑"
+          onClick={onEdit}
+          tooltip="编辑"
+        >
+          <PenLine className="size-3.5" />
+        </MessageAction>
+      </MessageActions>
+    </div>
+  )
+}
+
+function PromptInputControllerBridge({
+  controllerRef,
+}: {
+  controllerRef: MutableRefObject<PromptInputControllerProps | null>
+}) {
+  const controller = usePromptInputController()
+  useEffect(() => {
+    controllerRef.current = controller
+    return () => {
+      if (controllerRef.current === controller) controllerRef.current = null
+    }
+  }, [controller, controllerRef])
+  return null
 }
 
 function UsageDetailsModal({
@@ -2632,6 +2994,8 @@ function AgentMemoryIntro({ onMemoryCreated }: { onMemoryCreated: () => void }) 
   const [finalizingLineIndex, setFinalizingLineIndex] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
   const [cues, setCues] = useState<MemorySubtitleCue[]>(() => parseMemorySrt(MEMORY_INTRO_FALLBACK_SRTS.name))
+  const [audioPreferenceLoaded, setAudioPreferenceLoaded] = useState(false)
+  const [audioEnabled, setAudioEnabled] = useState(false)
   const currentAnswer = answers[question.key] || ''
   const lines = useMemo<MemoryTypewriterTextPart[][]>(() => cues.map((cue) => [cue.text]), [cues])
   const lineStarts = useMemo(() => {
@@ -2652,6 +3016,40 @@ function AgentMemoryIntro({ onMemoryCreated }: { onMemoryCreated: () => void }) 
 
   useEffect(() => {
     let cancelled = false
+    void configService.getNarrationAudioEnabledPreference()
+      .then((value) => {
+        if (cancelled) return
+        setAudioEnabled(value === true)
+      })
+      .catch(() => {
+        if (!cancelled) setAudioEnabled(false)
+      })
+      .finally(() => {
+        if (!cancelled) setAudioPreferenceLoaded(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const commitAudioPreference = useCallback((enabled: boolean) => {
+    setAudioEnabled(enabled)
+    void configService.setNarrationAudioEnabled(enabled).catch(() => {
+      // 声音偏好保存失败不影响本次引导。
+    })
+
+    const audio = audioRef.current
+    if (!audio) return
+    audio.muted = !enabled
+    if (enabled && audio.paused) {
+      void audio.play().catch(() => {
+        // Electron/浏览器策略可能拦截自动播放；保留开关状态。
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
     setCues(parseMemorySrt(MEMORY_INTRO_FALLBACK_SRTS[question.key]))
     void fetch(publicJiyiAsset(question.subtitleFile))
       .then((res) => (res.ok ? res.text() : ''))
@@ -2669,6 +3067,8 @@ function AgentMemoryIntro({ onMemoryCreated }: { onMemoryCreated: () => void }) 
   }, [question.key, question.subtitleFile])
 
   useEffect(() => {
+    if (!audioPreferenceLoaded) return
+
     const audio = audioRef.current
     if (!audio) return
 
@@ -2711,6 +3111,7 @@ function AgentMemoryIntro({ onMemoryCreated }: { onMemoryCreated: () => void }) 
       })
 
     audio.currentTime = 0
+    audio.muted = !audioEnabled
     setCurrentTime(0)
     lastStateProgressRef.current = -1
     if (progressFillRef.current) {
@@ -2734,7 +3135,19 @@ function AgentMemoryIntro({ onMemoryCreated }: { onMemoryCreated: () => void }) 
         progressFillRef.current.style.transform = 'translate3d(0, 0, 0) scaleX(0)'
       }
     }
-  }, [question.audioFile])
+  }, [audioPreferenceLoaded, question.audioFile])
+
+  useEffect(() => {
+    if (!audioPreferenceLoaded) return
+    const audio = audioRef.current
+    if (!audio) return
+    audio.muted = !audioEnabled
+    if (audioEnabled && audio.paused) {
+      void audio.play().catch(() => {
+        // Electron/浏览器策略可能拦截自动播放；保留开关状态。
+      })
+    }
+  }, [audioEnabled, audioPreferenceLoaded])
 
   useEffect(() => {
     setError('')
@@ -2833,6 +3246,33 @@ function AgentMemoryIntro({ onMemoryCreated }: { onMemoryCreated: () => void }) 
           }
         }}
       />
+
+      <div className="absolute right-5 top-5 z-20">
+        <Switch
+          aria-label="记忆引导声音"
+          isDisabled={!audioPreferenceLoaded}
+          isSelected={audioEnabled}
+          onChange={commitAudioPreference}
+          size="sm"
+        >
+          <Switch.Content className="gap-2 rounded-(--agent-radius,12px) border border-border bg-surface/80 px-2 py-1 text-foreground shadow-xs backdrop-blur hover:bg-surface">
+            <Switch.Control>
+              <Switch.Thumb>
+                <Switch.Icon>
+                  {audioEnabled ? (
+                    <Volume2 className="size-3" />
+                  ) : (
+                    <VolumeX className="size-3 opacity-70" />
+                  )}
+                </Switch.Icon>
+              </Switch.Thumb>
+            </Switch.Control>
+            <span className="whitespace-nowrap text-xs leading-none text-muted-foreground">
+              {audioEnabled ? '声音开' : '静音'}
+            </span>
+          </Switch.Content>
+        </Switch>
+      </div>
 
       <div className="relative z-10 flex size-full items-center justify-center px-6 py-10">
         <div className="grid w-full max-w-340 overflow-hidden">
@@ -3044,10 +3484,15 @@ export default function AgentPage() {
   const [agentProgress, setAgentProgress] = useState<AgentProgressEvent[]>([])
   const [agentRunPending, setAgentRunPending] = useState(false)
   const [subAgentProgress, setSubAgentProgress] = useState<AgentProgressEvent[]>([])
+  const toolElapsedByKeyRef = useRef(toolElapsedByKey)
+  toolElapsedByKeyRef.current = toolElapsedByKey
+  const subAgentProgressRef = useRef(subAgentProgress)
+  subAgentProgressRef.current = subAgentProgress
   const [agentNotice, setAgentNotice] = useState('')
   const [usageDetailsModal, setUsageDetailsModal] = useState<AgentMessageMetadata | null>(null)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const { speakingKey: speakingMessageId, speak: speakMessage, stop: stopSpeakingMessage } = useTtsSpeaker()
+  const promptInputControllerRef = useRef<PromptInputControllerProps | null>(null)
   const selectedPreset = useMemo(
     () => presets.find((preset) => preset.id === selectedPresetId) || null,
     [presets, selectedPresetId]
@@ -3219,6 +3664,15 @@ export default function AgentPage() {
     }, 1600)
   }, [])
 
+  const handleCopyUserMessage = useCallback(async (messageId: string, text: string) => {
+    if (!text || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return
+    await navigator.clipboard.writeText(text)
+    setCopiedMessageId(messageId)
+    window.setTimeout(() => {
+      setCopiedMessageId((current) => current === messageId ? null : current)
+    }, 1600)
+  }, [])
+
   const handleSpeakAssistantMessage = useCallback((messageId: string, text: string) => {
     if (!text) return
     void speakMessage(messageId, text)
@@ -3230,6 +3684,12 @@ export default function AgentPage() {
   const [conversationId, setConversationId] = useState<number | null>(null)
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
+  const applyConversationId = useCallback((nextId: number | null) => {
+    const normalized = nextId && nextId > 0 ? nextId : null
+    setConversationId(normalized)
+    conversationIdRef.current = normalized
+    storeActiveAgentConversation(normalized)
+  }, [])
   const transport = useMemo(
     () => new IpcChatTransport(
       () => submitScopeRef.current ?? scopeRef.current,
@@ -3243,7 +3703,12 @@ export default function AgentPage() {
     [handleAgentProgress]
   )
   // 流式 chunk 合并到每 50ms 更新一次 UI，避免 token 级高频重渲染拖卡滚动
-  const { messages, sendMessage, setMessages, status, stop } = useChat({ transport, experimental_throttle: 50 })
+  const { messages, sendMessage, regenerate, setMessages, status, stop } = useChat({ transport, experimental_throttle: 50 })
+  const messagesRef = useRef<UIMessage[]>(messages)
+  messagesRef.current = messages
+  const lastSavedMessagesRef = useRef('')
+  const streamingSaveTimerRef = useRef<number | null>(null)
+  const lastStreamingSaveAtRef = useRef(0)
   const [modelOpen, setModelOpen] = useState(false)
   const busy = status === 'submitted' || status === 'streaming'
   const [memoryIntroStatus, setMemoryIntroStatus] = useState<AgentMemoryIntroStatus>('checking')
@@ -3364,8 +3829,16 @@ export default function AgentPage() {
   const [conversationRecords, setConversationRecords] = useState<AgentConversationRecord[]>([])
   const [recordPendingDelete, setRecordPendingDelete] = useState<AgentConversationRecord | null>(null)
   const [recordDeleting, setRecordDeleting] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
+  const [shareSearch, setShareSearch] = useState('')
+  const [shareSelectedId, setShareSelectedId] = useState<number | null>(null)
+  const [sharePreviewData, setSharePreviewData] = useState<AgentSharePreviewData | null>(null)
+  const [shareLoading, setShareLoading] = useState(false)
+  const [shareSaving, setShareSaving] = useState(false)
+  const [shareError, setShareError] = useState('')
+  const shareCardRef = useRef<HTMLDivElement | null>(null)
   // Agent 运行状态 → 桌宠动作：跑→run，报错→failed，收尾→done(挥手 2.6s)。
-  const petAgentState = busy ? 'running' : agentNotice ? 'failed' : 'idle'
+  const petAgentState = busy ? 'running' : (agentNotice && !agentNotice.startsWith('状态：') ? 'failed' : 'idle')
   const petPrevBusyRef = useRef(false)
   useEffect(() => {
     if (petAgentState === 'idle' && petPrevBusyRef.current) {
@@ -3511,12 +3984,12 @@ export default function AgentPage() {
 
   const refreshConversationRecords = useCallback(async () => {
     const result = await window.electronAPI.agent.listConversations()
-    if (!result.success || !Array.isArray(result.conversations)) return
-    setConversationRecords(
-      result.conversations
-        .map(normalizeConversationRecord)
-        .filter((item): item is AgentConversationRecord => !!item)
-    )
+    if (!result.success || !Array.isArray(result.conversations)) return []
+    const records = result.conversations
+      .map(normalizeConversationRecord)
+      .filter((item): item is AgentConversationRecord => !!item)
+    setConversationRecords(records)
+    return records
   }, [])
 
   const handleRecordsOpenChange = useCallback((open: boolean) => {
@@ -3524,22 +3997,80 @@ export default function AgentPage() {
     if (open) void refreshConversationRecords()
   }, [refreshConversationRecords])
 
-  const persistConversationMessages = useCallback(async (
+  const saveConversationMessages = useCallback((
     targetId: number | null,
     nextMessages: UIMessage[],
     nextScope: AgentScope,
   ) => {
-    if (!targetId || nextMessages.length === 0) return
+    if (!targetId || nextMessages.length === 0) return null
     const config = selectedModelConfigRef.current
-    const result = await window.electronAPI.agent.saveConversationMessages({
+    return window.electronAPI.agent.saveConversationMessages({
       id: targetId,
       messages: nextMessages,
       scope: nextScope,
       modelProvider: modelConfigProvider(config),
       modelId: modelConfigId(config),
     })
-    if (result.success) void refreshConversationRecords()
-  }, [refreshConversationRecords])
+  }, [])
+
+  const persistConversationMessages = useCallback(async (
+    targetId: number | null,
+    nextMessages: UIMessage[],
+    nextScope: AgentScope,
+  ) => {
+    const result = await saveConversationMessages(targetId, nextMessages, nextScope)
+    if (result?.success) void refreshConversationRecords()
+  }, [refreshConversationRecords, saveConversationMessages])
+
+  const flushConversationMessagesToStorage = useCallback((options: { refreshRecords?: boolean } = {}) => {
+    const targetId = conversationIdRef.current
+    const currentMessages = messagesRef.current
+    if (!targetId || currentMessages.length === 0) return false
+
+    const messagesToPersist = prepareAgentMessagesForPersist(
+      currentMessages,
+      subAgentProgressRef.current,
+      toolElapsedByKeyRef.current,
+    )
+    if (messagesToPersist !== currentMessages) {
+      setMessages(messagesToPersist)
+      messagesRef.current = messagesToPersist
+    }
+
+    const signature = signatureAgentMessages(messagesToPersist)
+    if (signature === lastSavedMessagesRef.current) return false
+    lastSavedMessagesRef.current = signature
+
+    if (options.refreshRecords) {
+      void persistConversationMessages(targetId, messagesToPersist, activeScopeRef.current)
+    } else {
+      void saveConversationMessages(targetId, messagesToPersist, activeScopeRef.current)
+    }
+    return true
+  }, [persistConversationMessages, saveConversationMessages, setMessages])
+
+  const saveCurrentConversationForShare = useCallback(async (): Promise<number | null> => {
+    const targetId = conversationIdRef.current
+    const currentMessages = messagesRef.current
+    if (!targetId || currentMessages.length === 0) return targetId
+
+    const messagesToPersist = prepareAgentMessagesForPersist(
+      currentMessages,
+      subAgentProgressRef.current,
+      toolElapsedByKeyRef.current,
+    )
+    if (messagesToPersist !== currentMessages) {
+      setMessages(messagesToPersist)
+      messagesRef.current = messagesToPersist
+    }
+
+    const signature = signatureAgentMessages(messagesToPersist)
+    if (signature !== lastSavedMessagesRef.current) {
+      lastSavedMessagesRef.current = signature
+      await persistConversationMessages(targetId, messagesToPersist, activeScopeRef.current)
+    }
+    return targetId
+  }, [persistConversationMessages, setMessages])
 
   const createConversation = useCallback(async (scope: AgentScope, title: string): Promise<number | null> => {
     const config = selectedModelConfigRef.current
@@ -3551,12 +4082,127 @@ export default function AgentPage() {
     })
     const record = result.success ? normalizeConversationRecord(result.conversation) : null
     if (!record) return null
-    setConversationId(record.id)
-    conversationIdRef.current = record.id
+    applyConversationId(record.id)
     setConversationTitle(record.title)
     void refreshConversationRecords()
     return record.id
-  }, [refreshConversationRecords])
+  }, [applyConversationId, refreshConversationRecords])
+
+  const restoreLoadedConversation = useCallback((
+    loaded: AgentConversationLoaded,
+    options: { closeRecords?: boolean } = {},
+  ) => {
+    setMessages(loaded.messages)
+    messagesRef.current = loaded.messages
+    lastSavedMessagesRef.current = signatureAgentMessages(loaded.messages)
+    applyConversationId(loaded.id)
+    setConversationTitle(loaded.title)
+    setTitleEditing(false)
+    setTitleDraft('')
+    activeScopeRef.current = loaded.scope || { kind: 'global' }
+    setMentions([])
+    const restoredToolElapsed: Record<string, number> = {}
+    for (const message of loaded.messages) Object.assign(restoredToolElapsed, readToolElapsedFromMessage(message))
+    setToolElapsedByKey(restoredToolElapsed)
+    setAgentProgress([])
+    setAgentRunPending(false)
+    setSubAgentProgress([])
+    setAgentNotice('')
+    setTitleLoading(false)
+    titleRequestSeqRef.current += 1
+    if (options.closeRecords !== false) setRecordsOpen(false)
+  }, [applyConversationId, setMessages])
+
+  const loadConversationById = useCallback(async (
+    id: number,
+    options: { closeRecords?: boolean } = {},
+  ): Promise<boolean> => {
+    const result = await window.electronAPI.agent.loadConversation(id)
+    const loaded = result.success ? normalizeLoadedConversation(result.conversation) : null
+    if (!loaded) return false
+    restoreLoadedConversation(loaded, options)
+    return true
+  }, [restoreLoadedConversation])
+
+  const shareFilteredRecords = useMemo(() => {
+    const keyword = shareSearch.trim().toLowerCase()
+    if (!keyword) return conversationRecords
+    return conversationRecords.filter((record) => record.title.toLowerCase().includes(keyword))
+  }, [conversationRecords, shareSearch])
+
+  const loadShareConversation = useCallback(async (record: AgentConversationRecord) => {
+    setShareSelectedId(record.id)
+    setShareLoading(true)
+    setShareError('')
+    try {
+      const result = await window.electronAPI.agent.loadConversation(record.id)
+      const loaded = result.success ? normalizeLoadedConversation(result.conversation) : null
+      if (!loaded) {
+        setSharePreviewData(null)
+        setShareError(result.error || '加载对话失败')
+        return
+      }
+      setSharePreviewData(buildAgentSharePreviewData(loaded))
+    } catch (error) {
+      setSharePreviewData(null)
+      setShareError(error instanceof Error ? error.message : '加载对话失败')
+    } finally {
+      setShareLoading(false)
+    }
+  }, [])
+
+  const handleOpenShare = useCallback(async () => {
+    if (busy) {
+      setAgentNotice('当前 Agent 正在输出，等这轮结束后再分享。')
+      return
+    }
+    const currentId = await saveCurrentConversationForShare()
+    if (!currentId && messagesRef.current.length > 0) {
+      setAgentNotice('当前对话还没有可分享的记录。')
+      return
+    }
+    setShareOpen(true)
+    setShareError('')
+    setShareSearch('')
+    setSharePreviewData(null)
+    setShareSelectedId(null)
+    void refreshConversationRecords().then((records) => {
+      const target = records.find((record) => record.id === currentId) || records[0]
+      if (target) void loadShareConversation(target)
+    })
+  }, [busy, loadShareConversation, refreshConversationRecords, saveCurrentConversationForShare])
+
+  const handleSaveShareImage = useCallback(async () => {
+    if (!sharePreviewData || !shareCardRef.current) return
+    setShareSaving(true)
+    setShareError('')
+    try {
+      const fileName = `CipherTalk-Agent-${sanitizeAgentShareFileName(sharePreviewData.title)}-${formatAgentShareFileDate()}.png`
+      const saveResult = await window.electronAPI.dialog.saveFile({
+        title: '保存 Agent 分享图',
+        defaultPath: fileName,
+        filters: [{ name: 'PNG 图片', extensions: ['png'] }],
+      })
+      if (saveResult.canceled || !saveResult.filePath) return
+
+      const dataUrl = await toPng(shareCardRef.current, {
+        bgcolor: '#f8fafc',
+        cacheBust: true,
+        scale: 2,
+      })
+      const base64 = dataUrl.replace(/^data:image\/png;base64,/, '')
+      const writeResult = await window.electronAPI.file.writeBase64(saveResult.filePath, base64)
+      if (!writeResult.success) {
+        setShareError(writeResult.error || '保存图片失败')
+        return
+      }
+      toast.success('分享图已保存')
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : '生成图片失败')
+    } finally {
+      setShareSaving(false)
+    }
+  }, [sharePreviewData])
 
   const generateTitleFromFirstMessage = useCallback((firstMessage: string) => {
     const fallback = buildFallbackConversationTitle(firstMessage)
@@ -3586,6 +4232,7 @@ export default function AgentPage() {
   const handleNewConversation = useCallback(() => {
     if (busy) void stop()
     setMessages([])
+    messagesRef.current = []
     setMentions([])
     setConversationTitle('新对话')
     setTitleEditing(false)
@@ -3599,39 +4246,14 @@ export default function AgentPage() {
     activeScopeRef.current = { kind: 'global' }
     lastSavedMessagesRef.current = ''
     titleRequestSeqRef.current += 1
-    setConversationId(null)
+    applyConversationId(null)
     setRecordsOpen(false)
-  }, [busy, setMessages, stop])
+  }, [applyConversationId, busy, setMessages, stop])
 
   const handleOpenRecord = useCallback((record: AgentConversationRecord) => {
     if (busy) void stop()
-    void window.electronAPI.agent.loadConversation(record.id).then((result) => {
-      const loaded = result.success ? normalizeLoadedConversation(result.conversation) : null
-      if (!loaded) return
-      setMessages(loaded.messages)
-      try {
-        lastSavedMessagesRef.current = JSON.stringify(loaded.messages)
-      } catch {
-        lastSavedMessagesRef.current = ''
-      }
-      setConversationId(loaded.id)
-      setConversationTitle(loaded.title)
-      setTitleEditing(false)
-      setTitleDraft('')
-      activeScopeRef.current = loaded.scope || { kind: 'global' }
-      setMentions([])
-      const restoredToolElapsed: Record<string, number> = {}
-      for (const message of loaded.messages) Object.assign(restoredToolElapsed, readToolElapsedFromMessage(message))
-      setToolElapsedByKey(restoredToolElapsed)
-      setAgentProgress([])
-      setAgentRunPending(false)
-      setSubAgentProgress([])
-      setAgentNotice('')
-      setTitleLoading(false)
-      titleRequestSeqRef.current += 1
-      setRecordsOpen(false)
-    })
-  }, [busy, setMessages, stop])
+    void loadConversationById(record.id)
+  }, [busy, loadConversationById, stop])
 
   const handleDeleteRecord = useCallback(async (record: AgentConversationRecord) => {
     try {
@@ -3643,7 +4265,8 @@ export default function AgentPage() {
       setConversationRecords((prev) => prev.filter((item) => item.id !== record.id))
       if (conversationIdRef.current === record.id) {
         setMessages([])
-        setConversationId(null)
+        messagesRef.current = []
+        applyConversationId(null)
         setConversationTitle('新对话')
         setTitleEditing(false)
         setTitleDraft('')
@@ -3659,7 +4282,7 @@ export default function AgentPage() {
       setAgentNotice(error instanceof Error ? error.message : '删除对话失败')
       return false
     }
-  }, [setMessages])
+  }, [applyConversationId, setMessages])
 
   const confirmDeleteRecord = useCallback(async () => {
     if (!recordPendingDelete) return
@@ -3889,6 +4512,38 @@ export default function AgentPage() {
     }
   }, [refreshConversationRecords])
 
+  useEffect(() => {
+    let cancelled = false
+
+    const loadIfStillEmpty = async (id: number): Promise<boolean> => {
+      if (cancelled || conversationIdRef.current || messagesRef.current.length > 0) return false
+      const result = await window.electronAPI.agent.loadConversation(id)
+      if (cancelled || conversationIdRef.current || messagesRef.current.length > 0) return false
+      const loaded = result.success ? normalizeLoadedConversation(result.conversation) : null
+      if (!loaded) return false
+      restoreLoadedConversation(loaded, { closeRecords: false })
+      return true
+    }
+
+    void (async () => {
+      const stored = readStoredActiveAgentConversation()
+      if (stored === NEW_AGENT_CONVERSATION_MARKER) return
+      if (typeof stored === 'number' && await loadIfStillEmpty(stored)) return
+      if (cancelled || conversationIdRef.current || messagesRef.current.length > 0) return
+
+      const result = await window.electronAPI.agent.getLastConversation()
+      const record = result.success ? normalizeConversationRecord(result.conversation) : null
+      if (!record) return
+      await loadIfStillEmpty(record.id)
+    })().catch(() => {
+      // 恢复失败时保持空白新对话。
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [restoreLoadedConversation])
+
   const handleSubmit = async (message: PromptInputMessage) => {
     if (busy) {
       void stop()
@@ -3955,6 +4610,8 @@ export default function AgentPage() {
 
   const handleRegenerateAssistantMessage = useCallback((messageIndex: number) => {
     if (busy || !selectedModelSupportsTools) return
+    const assistantMessage = messages[messageIndex]
+    if (!assistantMessage || assistantMessage.role !== 'assistant') return
     const userIndex = (() => {
       for (let index = messageIndex - 1; index >= 0; index -= 1) {
         if (messages[index]?.role === 'user') return index
@@ -3963,10 +4620,27 @@ export default function AgentPage() {
     })()
     if (userIndex < 0) return
 
-    const userMessage = messages[userIndex]
-    const text = messageTextOf(userMessage)
-    const files = userMessage.parts.filter((part): part is Extract<UIMessage['parts'][number], { type: 'file' }> => part.type === 'file')
-    if (!text && files.length === 0) return
+    stopSpeakingMessage()
+    setAgentNotice('')
+    setAgentProgress([])
+    setAgentRunPending(true)
+    setSubAgentProgress([])
+    runIsPlanRef.current = planModeRef.current
+    submitScopeRef.current = activeScopeRef.current
+    const nextMessages = messages.slice(0, messageIndex)
+    messagesRef.current = nextMessages
+
+    const sendPromise = Promise.resolve(regenerate({ messageId: assistantMessage.id })).finally(() => {
+      submitScopeRef.current = null
+      setAgentRunPending(false)
+    })
+    void sendPromise
+  }, [busy, messages, regenerate, selectedModelSupportsTools])
+
+  const handleRetryUserMessage = useCallback((messageIndex: number) => {
+    if (busy || !selectedModelSupportsTools) return
+    const userMessage = messages[messageIndex]
+    if (!userMessage || userMessage.role !== 'user') return
 
     stopSpeakingMessage()
     setAgentNotice('')
@@ -3975,14 +4649,29 @@ export default function AgentPage() {
     setSubAgentProgress([])
     runIsPlanRef.current = planModeRef.current
     submitScopeRef.current = activeScopeRef.current
-    setMessages(messages.slice(0, userIndex))
+    const nextMessages = messages.slice(0, messageIndex + 1)
+    setMessages(nextMessages)
+    messagesRef.current = nextMessages
 
-    const sendPromise = Promise.resolve(sendMessage({ text, files })).finally(() => {
+    const sendPromise = Promise.resolve(regenerate({ messageId: userMessage.id })).finally(() => {
       submitScopeRef.current = null
       setAgentRunPending(false)
     })
     void sendPromise
-  }, [busy, messages, selectedModelSupportsTools, sendMessage, setMessages])
+  }, [busy, messages, regenerate, selectedModelSupportsTools, setMessages, stopSpeakingMessage])
+
+  const handleEditUserMessage = useCallback((messageIndex: number, text: string) => {
+    if (busy) return
+    const userMessage = messages[messageIndex]
+    if (!userMessage || userMessage.role !== 'user') return
+    promptInputControllerRef.current?.textInput.setInput(text)
+    const nextMessages = messages.slice(0, messageIndex)
+    setMessages(nextMessages)
+    messagesRef.current = nextMessages
+    setAgentNotice('')
+    setAgentProgress([])
+    setSubAgentProgress([])
+  }, [busy, messages, setMessages])
 
   // 计划模式确认：关闭计划模式并让 Agent 按上一条计划开始执行（沿用当前会话 scope）
   const handleExecutePlan = useCallback(() => {
@@ -4015,29 +4704,38 @@ export default function AgentPage() {
     setModelOpen(false)
   }, [])
 
-  const lastSavedMessagesRef = useRef('')
   useEffect(() => {
-    if (busy || !conversationId || messages.length === 0) return
-    const messagesWithSubAgentProgress = attachSubAgentProgressToLastAssistant(messages, subAgentProgress)
-    if (messagesWithSubAgentProgress !== messages) {
-      setMessages(messagesWithSubAgentProgress)
+    if (!conversationId || messages.length === 0) return
+
+    if (busy) {
+      if (streamingSaveTimerRef.current !== null) return
+      const elapsedMs = Date.now() - lastStreamingSaveAtRef.current
+      const delayMs = Math.max(0, STREAMING_AGENT_SAVE_INTERVAL_MS - elapsedMs)
+      streamingSaveTimerRef.current = window.setTimeout(() => {
+        streamingSaveTimerRef.current = null
+        lastStreamingSaveAtRef.current = Date.now()
+        flushConversationMessagesToStorage()
+      }, delayMs)
       return
     }
-    const messagesWithToolElapsed = attachToolElapsedToMessages(messagesWithSubAgentProgress, toolElapsedByKey)
-    if (messagesWithToolElapsed !== messagesWithSubAgentProgress) {
-      setMessages(messagesWithToolElapsed)
-      return
+
+    if (streamingSaveTimerRef.current !== null) {
+      window.clearTimeout(streamingSaveTimerRef.current)
+      streamingSaveTimerRef.current = null
     }
-    let signature = ''
-    try {
-      signature = JSON.stringify(messagesWithToolElapsed)
-    } catch {
-      signature = `${messagesWithToolElapsed.length}:${Date.now()}`
+    lastStreamingSaveAtRef.current = Date.now()
+    flushConversationMessagesToStorage({ refreshRecords: true })
+  }, [busy, conversationId, flushConversationMessagesToStorage, messages, subAgentProgress, toolElapsedByKey])
+
+  useEffect(() => {
+    return () => {
+      if (streamingSaveTimerRef.current !== null) {
+        window.clearTimeout(streamingSaveTimerRef.current)
+        streamingSaveTimerRef.current = null
+      }
+      flushConversationMessagesToStorage()
     }
-    if (signature === lastSavedMessagesRef.current) return
-    lastSavedMessagesRef.current = signature
-    void persistConversationMessages(conversationId, messagesWithToolElapsed, activeScopeRef.current)
-  }, [busy, conversationId, messages, persistConversationMessages, setMessages, subAgentProgress, toolElapsedByKey])
+  }, [flushConversationMessagesToStorage])
 
   // 出处：会话名解析
   const sessionNameMap = useMemo(() => new Map(sessions.map((s) => [s.username, s.displayName])), [sessions])
@@ -4247,6 +4945,20 @@ export default function AgentPage() {
               </Dropdown>
               <Tooltip delay={0}>
                 <HeroButton
+                  aria-label="分享对话"
+                  className="size-9 p-0"
+                  isDisabled={busy}
+                  isIconOnly
+                  onPress={handleOpenShare}
+                  size="md"
+                  variant="tertiary"
+                >
+                  <Share2 className="size-4.5" />
+                </HeroButton>
+                <Tooltip.Content placement="bottom">{busy ? '输出结束后可分享' : '分享对话'}</Tooltip.Content>
+              </Tooltip>
+              <Tooltip delay={0}>
+                <HeroButton
                   aria-label="新建对话"
                   className="size-9 p-0"
                   isIconOnly
@@ -4276,14 +4988,14 @@ export default function AgentPage() {
               state={codeWorkspaceState}
             />
           )}
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
       <Conversation className="min-h-0 flex-1">
         <ConversationAutoScroll enabled={shouldAnchorLatestUser} trigger={latestUserMessageId} />
         <ConversationContent
           className={
             messages.length === 0
-              ? 'mx-auto h-full w-full min-w-80 max-w-[82%] pt-4 pb-12'
-              : 'mx-auto w-full min-w-80 max-w-[82%] pt-4 pb-12'
+              ? 'mx-auto h-full w-full min-w-80 max-w-[82%] pt-4 pb-48'
+              : 'mx-auto w-full min-w-80 max-w-[82%] pt-4 pb-48'
           }
         >
           {messages.length === 0 ? (
@@ -4298,6 +5010,7 @@ export default function AgentPage() {
               const isReasoningStreaming = isLastMessage && status === 'streaming' && lastPart?.type === 'reasoning'
               const chainActive = isLastMessage && busy
               const assistantText = message.role === 'assistant' ? messageTextOf(message) : ''
+              const userMessageText = message.role === 'user' ? messageTextOf(message) : ''
               const assistantTextStreaming = message.role === 'assistant' && isLastMessage && status === 'streaming'
               // 计划模式生成的消息：正文(执行计划)走 PlanCard 折叠卡片，不再走普通 Markdown 渲染。
               // 完成后看 metadata.planMode；流式期间 metadata 还没回来，靠在途标记 runIsPlanRef 判定。
@@ -4329,18 +5042,20 @@ export default function AgentPage() {
                   return Boolean(displayText.trim())
                 })
               const shouldRenderMessageContent = message.role !== 'user' || hasRenderableUserText
-              // generate_image / send_sticker / send_random_image 的产出图：正文区直接展示
+              // generate_image / send_sticker / send_random_image / send_media_from_history / inspect_media_image 的产出图：正文区直接展示
               const renderGeneratedImageTool = (part: AgentMessagePart, index: number) => {
                 if (!isAgentChainPart(part)) return null
                 const isSticker = part.type === 'tool-send_sticker'
                 const isRandomImage = part.type === 'tool-send_random_image'
+                const isHistoryMedia = part.type === 'tool-send_media_from_history'
+                const isInspectMedia = part.type === 'tool-inspect_media_image'
                 const isGenerated = part.type === 'tool-generate_image'
-                if ((!isSticker && !isRandomImage && !isGenerated) || part.state !== 'output-available') return null
-                const output = part.output as { filePath?: unknown; from?: unknown; sender?: unknown; time?: unknown } | undefined
+                if ((!isSticker && !isRandomImage && !isHistoryMedia && !isInspectMedia && !isGenerated) || part.state !== 'output-available') return null
+                const output = part.output as { filePath?: unknown; from?: unknown; sender?: unknown; time?: unknown; mediaKind?: unknown } | undefined
                 const filePath = String(output?.filePath || '')
                 if (!filePath) return null
                 const imageSrc = `local-image://${encodeURIComponent(filePath)}`
-                const caption = isRandomImage
+                const caption = isRandomImage || isHistoryMedia || isInspectMedia
                   ? [output?.sender, output?.from, output?.time].map((v) => String(v || '')).filter(Boolean).join(' · ')
                   : ''
                 return (
@@ -4358,8 +5073,8 @@ export default function AgentPage() {
                       type="button"
                     >
                       <img
-                        alt={isSticker ? '表情包' : isRandomImage ? '聊天记录里的图片' : 'AI 生成的图片'}
-                        className={isSticker
+                        alt={isSticker || output?.mediaKind === 'emoji' ? '表情包' : isRandomImage || isHistoryMedia || isInspectMedia ? '历史图片' : 'AI 生成的图片'}
+                        className={isSticker || output?.mediaKind === 'emoji'
                           ? 'max-h-40 max-w-40 rounded-(--agent-radius,12px)'
                           : 'max-h-90 max-w-full rounded-(--agent-radius,12px) border border-border/60 shadow-xs'}
                         src={imageSrc}
@@ -4549,6 +5264,17 @@ export default function AgentPage() {
                       )}
                     </MessageContent>
                   )}
+                  {message.role === 'user' && (
+                    <UserMessageActions
+                      canRetry={selectedModelSupportsTools}
+                      copied={copiedMessageId === message.id}
+                      messageText={userMessageText}
+                      onCopy={() => { void handleCopyUserMessage(message.id, userMessageText) }}
+                      onEdit={() => handleEditUserMessage(messageIndex, userMessageText)}
+                      onRetry={() => handleRetryUserMessage(messageIndex)}
+                      retrying={busy}
+                    />
+                  )}
                 </Message>
               )
             })
@@ -4578,14 +5304,26 @@ export default function AgentPage() {
           {busy && subAgentProgress.length > 0 && !lastAssistantMessageHasDelegateTool && <SubAgentProgressPanel events={subAgentProgress} />}
           {status === 'submitted' && agentProgress.length === 0 && <Loader />}
         </ConversationContent>
-        <ConversationScrollButton />
+        <ConversationScrollButton className="bottom-36" />
       </Conversation>
 
-      <div className="shrink-0 pt-2 pb-1">
+      <div className="pointer-events-none absolute right-0 bottom-0 left-0 h-44">
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 backdrop-blur-[2px]"
+          style={{
+            background: 'linear-gradient(to top, var(--bg-primary) 0%, color-mix(in srgb, var(--bg-primary) 82%, transparent) 48%, transparent 100%)',
+            maskImage: 'linear-gradient(to top, black 0%, black 58%, transparent 100%)',
+            WebkitMaskImage: 'linear-gradient(to top, black 0%, black 58%, transparent 100%)',
+          }}
+        />
+        <div className="absolute right-0 bottom-3 left-0 grid place-items-center px-5">
+          <div className="pointer-events-auto w-full max-w-4xl">
         <PromptInputProvider>
+          <PromptInputControllerBridge controllerRef={promptInputControllerRef} />
           <PromptInput
             accept="image/*,.txt,.md,.json,.csv,.pdf,application/pdf"
-            className={`agent-prompt-input mx-auto mb-1 w-full min-w-80 max-w-[82%] **:data-[slot=input-group]:rounded-(--agent-radius,12px) **:data-[slot=input-group]:border-border **:data-[slot=input-group]:bg-surface **:data-[slot=input-group]:shadow-xs ${workspaceFileDragOver ? '**:data-[slot=input-group]:ring-2 **:data-[slot=input-group]:ring-primary/45' : ''}`}
+            className={`agent-prompt-input w-full **:data-[slot=input-group]:rounded-(--agent-radius,12px) **:data-[slot=input-group]:border-border **:data-[slot=input-group]:bg-surface **:data-[slot=input-group]:shadow-lg ${workspaceFileDragOver ? '**:data-[slot=input-group]:ring-2 **:data-[slot=input-group]:ring-primary/45' : ''}`}
             maxFiles={6}
             maxFileSize={8 * 1024 * 1024}
             multiple
@@ -4612,13 +5350,13 @@ export default function AgentPage() {
                 sessions={sessions}
               />
               <PromptInputTextarea
-                className="pt-1.5 pb-2"
+                className="min-h-10 max-h-40 py-2 text-sm leading-5"
                 placeholder="问问你的聊天记录，Enter 发送，Shift + Enter 换行…"
               />
             </PromptInputBody>
 
-            <PromptInputFooter>
-              <PromptInputTools className="flex-wrap gap-2">
+            <PromptInputFooter className="items-center gap-1.5 px-2.5 pt-1 pb-2">
+              <PromptInputTools className="flex-wrap gap-1.5">
                 <ButtonGroup size="sm" variant="tertiary">
                   <PromptInputActionMenu>
                     <PromptInputActionMenuTrigger aria-label="更多输入操作" variant="tertiary" />
@@ -4763,7 +5501,7 @@ export default function AgentPage() {
             </PromptInputFooter>
           </PromptInput>
         </PromptInputProvider>
-        <div className="mx-auto flex w-full min-w-80 max-w-[82%] items-center justify-between gap-3 px-2">
+        <div className="mt-2 flex w-full items-center justify-between gap-3 px-2">
           <CodeWorkspacePanel
             approval={codeWorkspaceApproval}
             className="min-w-0 flex-1"
@@ -4781,6 +5519,8 @@ export default function AgentPage() {
               <span className="font-medium text-foreground/80">共 {formatTokenCount(conversationUsage.total)}</span>
             </div>
           )}
+        </div>
+          </div>
         </div>
       </div>
           </div>
@@ -4828,6 +5568,142 @@ export default function AgentPage() {
           </AlertDialog.Dialog>
         </AlertDialog.Container>
       </AlertDialog.Backdrop>
+      <Modal.Backdrop
+        isOpen={shareOpen}
+        onOpenChange={(open) => {
+          if (shareSaving) return
+          setShareOpen(open)
+        }}
+      >
+        <Modal.Container placement="center" size="cover">
+          <Modal.Dialog className="max-h-[calc(100vh-5rem)]">
+            <Modal.CloseTrigger />
+            <Modal.Header>
+              <Modal.Icon className="bg-accent-soft text-accent-soft-foreground">
+                <Share2 className="size-5" />
+              </Modal.Icon>
+              <Modal.Heading>分享 Agent 对话</Modal.Heading>
+            </Modal.Header>
+            <Modal.Body>
+              <div className="grid min-h-136 gap-5 lg:grid-cols-[20rem_minmax(0,1fr)]">
+                <div className="min-h-0 rounded-(--agent-radius,12px) border border-border bg-muted/20 p-3">
+                  <SearchField
+                    aria-label="搜索对话"
+                    className="mb-3"
+                    value={shareSearch}
+                    onChange={setShareSearch}
+                  >
+                    <SearchField.Group>
+                      <SearchField.SearchIcon />
+                      <SearchField.Input placeholder="搜索对话标题" />
+                      <SearchField.ClearButton />
+                    </SearchField.Group>
+                  </SearchField>
+                  <div className="ct-agent-scrollbar max-h-120 space-y-1 overflow-y-auto pr-1">
+                    {conversationRecords.length === 0 ? (
+                      <div className="flex min-h-40 items-center justify-center rounded-(--agent-radius,12px) border border-dashed border-border text-muted-foreground text-sm">
+                        暂无对话记录
+                      </div>
+                    ) : shareFilteredRecords.length === 0 ? (
+                      <div className="flex min-h-40 items-center justify-center rounded-(--agent-radius,12px) border border-dashed border-border text-muted-foreground text-sm">
+                        没有匹配的对话
+                      </div>
+                    ) : shareFilteredRecords.map((record) => {
+                      const selected = shareSelectedId === record.id
+                      return (
+                        <button
+                          className={`flex w-full items-center gap-3 rounded-(--agent-radius,12px) border px-3 py-2.5 text-left transition ${
+                            selected
+                              ? 'border-primary/40 bg-primary/10 text-primary'
+                              : 'border-transparent hover:border-border hover:bg-background'
+                          }`}
+                          key={record.id}
+                          onClick={() => { void loadShareConversation(record) }}
+                          type="button"
+                        >
+                          <Clock3 className="size-4 shrink-0 opacity-70" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium text-sm">{record.title}</span>
+                            <span className="block truncate text-muted-foreground text-xs">
+                              {new Date(record.updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </span>
+                          {selected && <CheckIcon className="size-4 shrink-0" />}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="min-h-0 overflow-hidden rounded-(--agent-radius,12px) border border-border bg-muted/30">
+                  <div className="flex items-center justify-between gap-3 border-border border-b bg-background/80 px-4 py-3">
+                    <div className="min-w-0">
+                      <Label className="block truncate">分享图预览</Label>
+                      <p className="truncate text-muted-foreground text-xs">仅包含用户与 Agent 的文本问答</p>
+                    </div>
+                    {sharePreviewData?.truncated && (
+                      <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-amber-700 text-xs dark:text-amber-300">
+                        已截取
+                      </span>
+                    )}
+                  </div>
+                  <div className="ct-agent-scrollbar max-h-124 overflow-auto p-5">
+                    {shareLoading ? (
+                      <div className="flex min-h-80 items-center justify-center gap-2 text-muted-foreground text-sm">
+                        <Spinner size="sm" />
+                        正在加载预览
+                      </div>
+                    ) : sharePreviewData ? (
+                      <div className="flex justify-center">
+                        <div className="origin-top scale-[0.72] md:scale-[0.78] lg:scale-[0.82]">
+                          <AgentShareCard data={sharePreviewData} />
+                        </div>
+                        <div
+                          aria-hidden
+                          className="pointer-events-none fixed -left-2500 top-0"
+                        >
+                          <AgentShareCard captureRef={shareCardRef} data={sharePreviewData} />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex min-h-80 items-center justify-center text-muted-foreground text-sm">
+                        选择一个对话生成预览
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              {shareError && (
+                <div className="mt-3 rounded-(--agent-radius,12px) border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+                  {shareError}
+                </div>
+              )}
+            </Modal.Body>
+            <Modal.Footer>
+              <HeroButton
+                isDisabled={shareSaving}
+                variant="tertiary"
+                onPress={() => setShareOpen(false)}
+              >
+                取消
+              </HeroButton>
+              <HeroButton
+                isDisabled={!sharePreviewData || sharePreviewData.messages.length === 0 || shareLoading}
+                isPending={shareSaving}
+                variant="primary"
+                onPress={handleSaveShareImage}
+              >
+                {({ isPending }) => (
+                  <>
+                    {isPending ? <Spinner color="current" size="sm" /> : <Download className="size-4" />}
+                    保存图片
+                  </>
+                )}
+              </HeroButton>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
       {generatedImagePreview && (
         <ImagePreview
           src={generatedImagePreview.src}

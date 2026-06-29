@@ -24,6 +24,7 @@ export interface WindowManager {
   closeSplashWindow(): Promise<void>
   createTray(): Tray | null
   destroyTray(): void
+  focusMainWindow(route?: string): BrowserWindow
   setDockIcon(): void
   openChatWindow(): BrowserWindow
   openMomentsWindow(filterUsername?: string): BrowserWindow
@@ -37,8 +38,10 @@ export interface WindowManager {
   ): BrowserWindow
   openVideoPlayerWindow(videoPath: string, videoWidth?: number, videoHeight?: number): BrowserWindow
   openBrowserWindow(url: string, title?: string): BrowserWindow
+  openSkillPreviewWindow(skillName: string): BrowserWindow
   openChatHistoryWindow(sessionId: string, messageId: number): BrowserWindow
   openPersonaChatWindow(sessionId: string): BrowserWindow
+  openPosterStyleWindow(): BrowserWindow
   completeWelcome(): boolean
   isChatWindowOpen(): boolean
   closeChatWindow(): boolean

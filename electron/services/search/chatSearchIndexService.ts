@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
 import { chatService, type Message } from '../chatService'
 import { ConfigService } from '../config'
@@ -71,6 +71,20 @@ export interface ChatSearchMemoryMessage {
   parsedContent: string
   rawContent: string
   searchText: string
+}
+
+export type ChatSearchMediaKind = 'image' | 'emoji'
+
+export interface ChatSearchMediaMessageRow {
+  sessionId: string
+  localId: number
+  sortSeq: number
+  createTime: number
+  isSend: number | null
+  senderUsername: string | null
+  localType: number
+  parsedContent: string
+  rawContent: string
 }
 
 type MessageIndexRow = {
@@ -386,11 +400,36 @@ export class ChatSearchIndexService {
       }
     }
 
-    const db = new Database(nextDbPath)
+    let db = new Database(nextDbPath)
+    try {
+      this.ensureSchema(db)
+    } catch (e) {
+      try { db.close() } catch { /* ignore */ }
+      if (!this.isMissingVec0ModuleError(e)) throw e
+      // 旧版本曾在本索引库建 sqlite-vec 的 message_embedding_vec(vec0) 虚表。新版不再加载该原生扩展，
+      // 而 DROP 这张虚表需调用 vec0 模块析构，模块缺失会抛 "no such module: vec0"，导致整个索引库
+      // 打不开（连带依赖它的数字分身构建直接报错）。索引库是可从微信库重建的派生缓存，直接删库重建。
+      this.removeSqliteFileSet(nextDbPath)
+      db = new Database(nextDbPath)
+      this.ensureSchema(db)
+    }
     this.db = db
     this.dbPath = nextDbPath
-    this.ensureSchema(db)
     return db
+  }
+
+  private isMissingVec0ModuleError(error: unknown): boolean {
+    return /no such module:\s*vec0/i.test(error instanceof Error ? error.message : String(error))
+  }
+
+  private removeSqliteFileSet(dbPath: string): void {
+    for (const filePath of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
+      try {
+        if (existsSync(filePath)) rmSync(filePath, { force: true })
+      } catch {
+        // best-effort 清理，删不掉也不阻塞重建
+      }
+    }
   }
 
   close(): void {
@@ -470,6 +509,10 @@ export class ChatSearchIndexService {
 
         CREATE INDEX IF NOT EXISTS idx_message_index_session_time
           ON message_index(session_id, sort_seq DESC, create_time DESC, local_id DESC);
+        CREATE INDEX IF NOT EXISTS idx_message_index_session_type_time
+          ON message_index(session_id, local_type, sort_seq DESC, create_time DESC, local_id DESC);
+        CREATE INDEX IF NOT EXISTS idx_message_index_type_time
+          ON message_index(local_type, sort_seq DESC, create_time DESC, local_id DESC);
         CREATE INDEX IF NOT EXISTS idx_message_index_session_sender
           ON message_index(session_id, sender_username);
       `)
@@ -849,6 +892,7 @@ export class ChatSearchIndexService {
           messagesScanned: scanned,
           indexedCount: this.getIndexedCount(db, sessionId)
         }, onProgress)
+        await this.yieldToEventLoop()
 
         hasMore = Boolean(result.hasMore)
       }
@@ -887,6 +931,7 @@ export class ChatSearchIndexService {
         messagesScanned: scanned,
         indexedCount: this.getIndexedCount(db, sessionId)
       }, onProgress)
+      await this.yieldToEventLoop()
     }
 
     while (hasMore && messages.length > 0 && (!maxMessages || scanned < maxMessages)) {
@@ -917,6 +962,7 @@ export class ChatSearchIndexService {
         messagesScanned: scanned,
         indexedCount: this.getIndexedCount(db, sessionId)
       }, onProgress)
+      await this.yieldToEventLoop()
     }
 
     const isComplete = !hasMore || (maxMessages ? scanned < maxMessages : false)
@@ -1167,6 +1213,109 @@ export class ChatSearchIndexService {
     } catch (e) {
       console.error('[ChatSearchIndex] pickRandomImageMessage 失败:', e)
       return null
+    }
+  }
+
+  getPrecedingTextMap(sessionId: string, sortSeqs: number[]): Map<number, string> {
+    const out = new Map<number, string>()
+    const unique = Array.from(new Set(sortSeqs.filter((value) => Number.isFinite(Number(value))).map(Number)))
+    if (unique.length === 0) return out
+    try {
+      const db = this.getDb()
+      const stmt = db.prepare(`
+        SELECT parsed_content
+        FROM message_index
+        WHERE session_id = ? AND sort_seq < ? AND local_type = 1 AND trim(parsed_content) != ''
+        ORDER BY sort_seq DESC
+        LIMIT 1
+      `)
+      for (const sortSeq of unique) {
+        const row = stmt.get(sessionId, sortSeq) as { parsed_content?: string } | undefined
+        out.set(sortSeq, String(row?.parsed_content || ''))
+      }
+    } catch {
+      // ignore; callers treat missing context as empty
+    }
+    return out
+  }
+
+  /**
+   * 列出已索引的图片/表情消息行。只读 message_index，不触发建索引；
+   * 为空时由调用方决定是否先索引最近会话或目标会话。
+   */
+  listMediaMessageRows(options: {
+    sessionId?: string
+    kinds?: ChatSearchMediaKind[]
+    startTimeMs?: number
+    endTimeMs?: number
+    direction?: 'in' | 'out'
+    limit?: number
+    offset?: number
+  } = {}): ChatSearchMediaMessageRow[] {
+    try {
+      const localTypes = Array.from(new Set(
+        (options.kinds?.length ? options.kinds : ['image', 'emoji'])
+          .map((kind) => kind === 'emoji' ? 47 : 3)
+      ))
+      const filters = [`local_type IN (${localTypes.map((_, index) => `@type${index}`).join(', ')})`]
+      const params: Record<string, unknown> = {
+        limit: Math.max(1, Math.min(200, Math.floor(Number(options.limit) || 30))),
+        offset: Math.max(0, Math.floor(Number(options.offset) || 0)),
+      }
+      localTypes.forEach((type, index) => {
+        params[`type${index}`] = type
+      })
+
+      if (options.sessionId) {
+        filters.push('session_id = @sessionId')
+        params.sessionId = options.sessionId
+      }
+      const startTime = toTimestampSeconds(options.startTimeMs)
+      const endTime = toTimestampSeconds(options.endTimeMs)
+      if (startTime) {
+        filters.push('create_time >= @startTime')
+        params.startTime = startTime
+      }
+      if (endTime) {
+        filters.push('create_time <= @endTime')
+        params.endTime = endTime
+      }
+      if (options.direction) {
+        filters.push(options.direction === 'out' ? 'is_send = 1' : '(is_send IS NULL OR is_send != 1)')
+      }
+
+      const rows = this.getDb().prepare(`
+        SELECT session_id, local_id, sort_seq, create_time, is_send, sender_username, local_type, parsed_content, raw_content
+        FROM message_index
+        WHERE ${filters.join(' AND ')}
+        ORDER BY sort_seq DESC, create_time DESC, local_id DESC
+        LIMIT @limit OFFSET @offset
+      `).all(params) as Array<{
+        session_id: string
+        local_id: number
+        sort_seq: number
+        create_time: number
+        is_send: number | null
+        sender_username: string | null
+        local_type: number
+        parsed_content: string
+        raw_content: string
+      }>
+
+      return rows.map((row) => ({
+        sessionId: row.session_id,
+        localId: Number(row.local_id || 0),
+        sortSeq: Number(row.sort_seq || 0),
+        createTime: Number(row.create_time || 0),
+        isSend: row.is_send ?? null,
+        senderUsername: row.sender_username ?? null,
+        localType: Number(row.local_type || 0),
+        parsedContent: String(row.parsed_content || ''),
+        rawContent: String(row.raw_content || '')
+      }))
+    } catch (e) {
+      console.error('[ChatSearchIndex] listMediaMessageRows 失败:', e)
+      return []
     }
   }
 

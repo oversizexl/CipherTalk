@@ -28,6 +28,8 @@ type ReleaseAnnouncementPayload = {
   generatedAt?: string
 }
 
+const MAIN_WINDOW_ROUTES = new Set(['/home', '/agent', '/settings', '/pets', '/diary', '/export'])
+
 function getReleaseAnnouncementPath(): string {
   const isDev = !!process.env.VITE_DEV_SERVER_URL
   return isDev
@@ -35,20 +37,21 @@ function getReleaseAnnouncementPath(): string {
     : join(process.resourcesPath, 'release-announcement.json')
 }
 
-function buildReleaseAnnouncementId(payload: ReleaseAnnouncementPayload, releaseBody: string, releaseNotes: string): string {
-  const version = String(payload.version || '').trim()
-  const generatedAt = String(payload.generatedAt || '').trim()
-  if (generatedAt) return `${version}:${generatedAt}`
-
-  const contentHash = createHash('sha256')
-    .update(version)
-    .update('\n')
+function buildReleaseAnnouncementContentId(releaseBody: string, releaseNotes: string): string {
+  return createHash('sha256')
     .update(releaseBody)
     .update('\n')
     .update(releaseNotes)
     .digest('hex')
     .slice(0, 16)
-  return `${version}:${contentHash}`
+}
+
+function buildReleaseAnnouncementId(payload: ReleaseAnnouncementPayload, releaseBody: string, releaseNotes: string): string {
+  const version = String(payload.version || '').trim()
+  const generatedAt = String(payload.generatedAt || '').trim()
+  if (generatedAt) return `${version}:${generatedAt}`
+
+  return `${version}:${buildReleaseAnnouncementContentId(releaseBody, releaseNotes)}`
 }
 
 function syncPackagedReleaseAnnouncement(ctx: MainProcessContext) {
@@ -69,15 +72,18 @@ function syncPackagedReleaseAnnouncement(ctx: MainProcessContext) {
     const releaseBody = String(payload.releaseBody || '').trim()
     const releaseNotes = String(payload.releaseNotes || '').trim()
     const announcementId = buildReleaseAnnouncementId(payload, releaseBody, releaseNotes)
+    const announcementContentId = buildReleaseAnnouncementContentId(releaseBody, releaseNotes)
 
     const storedVersion = configService.get('releaseAnnouncementVersion')
     const storedId = configService.get('releaseAnnouncementId')
+    const storedContentId = configService.get('releaseAnnouncementContentId')
     const storedBody = configService.get('releaseAnnouncementBody')
     const storedNotes = configService.get('releaseAnnouncementNotes')
 
     if (
       storedVersion === version &&
       storedId === announcementId &&
+      storedContentId === announcementContentId &&
       storedBody === releaseBody &&
       storedNotes === releaseNotes
     ) {
@@ -86,6 +92,7 @@ function syncPackagedReleaseAnnouncement(ctx: MainProcessContext) {
 
     configService.set('releaseAnnouncementVersion', version)
     configService.set('releaseAnnouncementId', announcementId)
+    configService.set('releaseAnnouncementContentId', announcementContentId)
     configService.set('releaseAnnouncementBody', releaseBody)
     configService.set('releaseAnnouncementNotes', releaseNotes)
     ctx.getLogService()?.info('ReleaseAnnouncement', '已同步本地版本公告', {
@@ -163,12 +170,26 @@ function getDockIconPath(ctx: MainProcessContext): string {
     : join(process.resourcesPath, 'icon.png')
 }
 
+/**
+ * 系统通知用的图标路径（PNG，比 .ico 在 Windows toast 里渲染更稳）。
+ * 返回有效路径，找不到则 null（由调用方决定是否带 icon）。
+ */
+export function getNotificationIconPath(): string | null {
+  const isDev = !!process.env.VITE_DEV_SERVER_URL
+  const candidates = isDev
+    ? [join(__dirname, '../public/logo.png'), join(__dirname, '../public/icon-dock.png')]
+    : [join(process.resourcesPath, 'icon.png')]
+  return candidates.find(p => existsSync(p)) || null
+}
+
 function getTrayIconPath(ctx: MainProcessContext): string {
   if (process.platform === 'darwin') {
     const isDev = !!process.env.VITE_DEV_SERVER_URL
     const devTrayPath = join(__dirname, '../public/tray-mac.png')
+    const packagedTrayPath = join(process.resourcesPath, 'tray-mac.png')
 
     if (isDev && existsSync(devTrayPath)) return devTrayPath
+    if (!isDev && existsSync(packagedTrayPath)) return packagedTrayPath
   }
 
   return getAppIconPath(ctx)
@@ -179,7 +200,11 @@ function getTrayImage(ctx: MainProcessContext) {
   const image = loadNativeImageIfValid(iconPath, 'tray icon')
 
   if (!image) return nativeImage.createEmpty()
-  if (process.platform === 'darwin') return image.resize({ height: 26 })
+  if (process.platform === 'darwin') {
+    const trayImage = image.resize({ height: 22 })
+    trayImage.setTemplateImage(true)
+    return trayImage
+  }
   return image
 }
 
@@ -197,6 +222,12 @@ function setupDevToolsShortcut(win: BrowserWindow, getTargetWindow?: () => Brows
       event.preventDefault()
     }
   })
+}
+
+function hideMacWindowControls(win: BrowserWindow): void {
+  if (process.platform !== 'darwin') return
+  win.setWindowButtonVisibility(false)
+  win.setWindowButtonPosition({ x: -100, y: -100 })
 }
 
 function loadWindowRoute(
@@ -244,6 +275,7 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
   let welcomeWindow: BrowserWindow | null = null
   let chatHistoryWindow: BrowserWindow | null = null
   let personaChatWindow: BrowserWindow | null = null
+  let posterStyleWindow: BrowserWindow | null = null
   let petWindow: BrowserWindow | null = null
   let petBaseBounds: { x: number; y: number; width: number; height: number } | null = null
   // 桌宠基础尺寸（与 openPetWindow 一致）；显示消息气泡时临时向上/左扩窗腾出空间
@@ -265,16 +297,16 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
     petBubbleExpanded = false
   }
 
-  const setPetWindowMaterial = (expanded: boolean): void => {
+  const setPetWindowMaterial = (_expanded: boolean): void => {
     if (!petWindow || petWindow.isDestroyed()) return
     try {
-      // win32 不做 setBackgroundMaterial 切换：acrylic 切回 'none' 后透明窗口会被
-      // 合成器画成不可恢复的黑底（Electron 已知 bug），气泡观感靠 .pet-notice 自身的 CSS 玻璃态。
+      // BrowserWindow 本身必须保持透明，气泡观感由 .pet-notice 自身的 CSS 负责。
+      petWindow.setBackgroundColor('#00000000')
       if (process.platform === 'darwin') {
-        petWindow.setVibrancy(expanded ? 'hud' : null)
+        petWindow.setVibrancy(null)
       }
     } catch {
-      // 平台材质是通知气泡的增强项，失败时保持普通透明桌宠窗口。
+      // 透明窗口本身仍可用。
     }
   }
 
@@ -303,6 +335,68 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
     const existingTray = ctx.getTray()
     if (existingTray) return existingTray
 
+    const focusMainWindow = (route?: string): BrowserWindow => manager.focusMainWindow(route)
+
+    const toggleMainWindow = () => {
+      const mainWindow = ctx.getMainWindow()
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized()) {
+        mainWindow.hide()
+        return
+      }
+      focusMainWindow()
+    }
+
+    const togglePetWindow = () => {
+      const configService = ctx.getConfigService()
+      const enabled = Boolean(configService?.get('petDesktopEnabled')) && manager.isPetWindowOpen()
+      if (enabled) {
+        manager.closePetWindow()
+        configService?.set('petDesktopEnabled', false)
+        ctx.broadcastToWindows('config:changed', { key: 'petDesktopEnabled', value: false })
+        return
+      }
+
+      configService?.set('petDesktopEnabled', true)
+      ctx.broadcastToWindows('config:changed', { key: 'petDesktopEnabled', value: true })
+      const currentPet = configService?.get('petCurrent')
+      if (currentPet) manager.openPetWindow()
+    }
+
+    const showTrayMenu = async () => {
+      const tray = ctx.getTray()
+      if (!tray) return
+      const configService = ctx.getConfigService()
+      const petEnabled = Boolean(configService?.get('petDesktopEnabled')) && manager.isPetWindowOpen()
+      const mainWindow = ctx.getMainWindow()
+      const mainVisible = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized())
+
+      const contextMenu = Menu.buildFromTemplate([
+        {
+          label: mainVisible ? '隐藏主窗口' : '显示主窗口',
+          click: toggleMainWindow,
+        },
+        { type: 'separator' },
+        { label: 'AI 助手', click: () => focusMainWindow('/agent') },
+        { label: '导出', click: () => focusMainWindow('/export') },
+        {
+          label: '桌宠',
+          type: 'checkbox',
+          checked: petEnabled,
+          click: togglePetWindow,
+        },
+        { label: '设置', click: () => focusMainWindow('/settings') },
+        { type: 'separator' },
+        {
+          label: '退出',
+          click: () => {
+            ctx.appWithQuitFlag.isQuitting = true
+            app.quit()
+          },
+        },
+      ])
+      tray.popUpContextMenu(contextMenu)
+    }
+
     let tray: Tray
     try {
       tray = new Tray(getTrayImage(ctx))
@@ -317,39 +411,18 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       tray.setIgnoreDoubleClickEvents(true)
     }
 
-    const showMainWindow = () => {
-      const mainWindow = ctx.getMainWindow()
-      if (mainWindow) {
-        if (mainWindow.isMinimized()) mainWindow.restore()
-        mainWindow.show()
-        mainWindow.focus()
-      }
-    }
-
-    const contextMenu = Menu.buildFromTemplate([
-      {
-        label: '显示主窗口',
-        click: showMainWindow
-      },
-      { type: 'separator' },
-      {
-        label: '退出',
-        click: () => {
-          ctx.appWithQuitFlag.isQuitting = true
-          app.quit()
-        }
-      }
-    ])
-
     tray.setToolTip('密语 CipherTalk')
-    tray.setContextMenu(contextMenu)
-    tray.on('double-click', showMainWindow)
+    tray.on('click', () => { void showTrayMenu() })
+    tray.on('right-click', () => { void showTrayMenu() })
 
     return tray
   }
 
   const manager: WindowManager = {
     createMainWindow() {
+      const configService = ctx.getConfigService() ?? new ConfigService()
+      const initialThemeMode = configService.get('themeMode')
+      const isInitialDark = initialThemeMode === 'dark' || (initialThemeMode === 'system' && nativeTheme.shouldUseDarkColors)
       const win = new BrowserWindow({
         width: 1400,
         height: 900,
@@ -366,16 +439,16 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         titleBarStyle: 'hidden',
         titleBarOverlay: {
           color: '#00000000',
-          symbolColor: '#1a1a1a',
+          symbolColor: isInitialDark ? '#ffffff' : '#1a1a1a',
           height: 40
         },
+        backgroundColor: isInitialDark ? '#1A1A1A' : '#FFFFFF',
         show: false
       })
 
       attachWindowStartupDiagnostics(win, 'main')
       ctx.setMainWindow(win)
       markStartupMilestone('window:main-services-init-start')
-      const configService = ctx.getConfigService() ?? new ConfigService()
       ctx.setConfigService(configService)
       ctx.setDbService(new DatabaseService())
 
@@ -436,10 +509,12 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       })
 
       if (process.env.VITE_DEV_SERVER_URL) {
-        win.loadURL(process.env.VITE_DEV_SERVER_URL)
+        win.loadURL(`${process.env.VITE_DEV_SERVER_URL}?${getThemeQueryParams(ctx)}`)
         setupDevToolsShortcut(win)
       } else {
-        win.loadFile(join(__dirname, '../dist/index.html'))
+        win.loadFile(join(__dirname, '../dist/index.html'), {
+          query: getThemeQuery(ctx)
+        })
       }
 
       return win
@@ -456,7 +531,7 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         resizable: false,
         skipTaskbar: true,
         hasShadow: false,
-        show: true,
+        show: false,
         webPreferences: {
           preload: join(__dirname, 'preload.js'),
           devTools: ctx.allowDevTools,
@@ -467,9 +542,14 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         backgroundColor: '#00000000'
       })
 
+      hideMacWindowControls(splash)
       attachWindowStartupDiagnostics(splash, 'splash')
       ctx.setSplashWindow(splash)
       splash.center()
+      splash.once('ready-to-show', () => {
+        hideMacWindowControls(splash)
+        splash.show()
+      })
 
       if (process.env.VITE_DEV_SERVER_URL) {
         splash.loadURL(`${process.env.VITE_DEV_SERVER_URL}#/splash`).catch(() => undefined)
@@ -505,6 +585,32 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         tray.destroy()
         ctx.setTray(null)
       }
+    },
+
+    focusMainWindow(route?: string) {
+      const targetRoute = route && MAIN_WINDOW_ROUTES.has(route) ? route : undefined
+      let win = ctx.getMainWindow()
+      if (!win || win.isDestroyed()) {
+        win = manager.createMainWindow()
+      }
+
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+
+      if (targetRoute) {
+        const sendNavigate = () => {
+          if (!win || win.isDestroyed()) return
+          win.webContents.send('window:navigate', targetRoute)
+        }
+        if (win.webContents.isLoading()) {
+          win.webContents.once('did-finish-load', sendNavigate)
+        } else {
+          sendNavigate()
+        }
+      }
+
+      return win
     },
 
     setDockIcon() {
@@ -730,6 +836,48 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         personaChatWindow = null
       })
       return personaChatWindow
+    },
+
+    openPosterStyleWindow() {
+      if (posterStyleWindow && !posterStyleWindow.isDestroyed()) {
+        if (posterStyleWindow.isMinimized()) posterStyleWindow.restore()
+        posterStyleWindow.show()
+        posterStyleWindow.focus()
+        return posterStyleWindow
+      }
+
+      const isDark = nativeTheme.shouldUseDarkColors
+      posterStyleWindow = new BrowserWindow({
+        width: 1120,
+        height: 760,
+        minWidth: 860,
+        minHeight: 560,
+        ...getWindowIconOptions(ctx),
+        webPreferences: {
+          preload: join(__dirname, 'preload.js'),
+          devTools: ctx.allowDevTools,
+          contextIsolation: true,
+          nodeIntegration: false,
+          webSecurity: false
+        },
+        titleBarStyle: 'hidden',
+        titleBarOverlay: {
+          color: '#00000000',
+          symbolColor: isDark ? '#ffffff' : '#1a1a1a',
+          height: 34
+        },
+        title: '海报编辑器',
+        show: false,
+        backgroundColor: '#15161a',
+        autoHideMenuBar: true
+      })
+
+      posterStyleWindow.once('ready-to-show', () => posterStyleWindow?.show())
+      loadWindowRoute(ctx, posterStyleWindow, '/poster-style-window')
+      posterStyleWindow.on('closed', () => {
+        posterStyleWindow = null
+      })
+      return posterStyleWindow
     },
 
     openAgreementWindow() {
@@ -1003,6 +1151,45 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       return win
     },
 
+    openSkillPreviewWindow(skillName: string) {
+      const safeSkillName = String(skillName || '').trim()
+      const win = new BrowserWindow({
+        width: 1180,
+        height: 780,
+        minWidth: 760,
+        minHeight: 520,
+        ...getWindowIconOptions(ctx),
+        webPreferences: {
+          preload: join(__dirname, 'preload.js'),
+          devTools: ctx.allowDevTools,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+        titleBarStyle: 'hidden',
+        titleBarOverlay: {
+          color: '#1a1a1a',
+          symbolColor: '#ffffff',
+          height: 36
+        },
+        show: false,
+        backgroundColor: '#ffffff',
+        title: `Skill Preview - ${safeSkillName}`
+      })
+
+      win.once('ready-to-show', () => win.show())
+      const queryParams = `${getThemeQueryParams(ctx)}&skill=${encodeURIComponent(safeSkillName)}`
+      if (process.env.VITE_DEV_SERVER_URL) {
+        win.loadURL(`${process.env.VITE_DEV_SERVER_URL}#/skill-preview-window?${queryParams}`)
+        setupDevToolsShortcut(win)
+      } else {
+        win.loadFile(join(__dirname, '../dist/index.html'), {
+          hash: `/skill-preview-window?${queryParams}`
+        })
+      }
+
+      return win
+    },
+
     completeWelcome() {
       if (welcomeWindow && !welcomeWindow.isDestroyed()) {
         welcomeWindow.close()
@@ -1033,6 +1220,7 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
 
     openPetWindow() {
       if (petWindow && !petWindow.isDestroyed()) {
+        hideMacWindowControls(petWindow)
         petWindow.show()
         return petWindow
       }
@@ -1048,6 +1236,7 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         y: workArea.y + workArea.height - height - 16,
         frame: false,
         transparent: true,
+        backgroundColor: '#00000000',
         resizable: false,
         maximizable: false,
         fullscreenable: false,
@@ -1064,8 +1253,13 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         }
       })
 
+      hideMacWindowControls(petWindow)
       petWindow.setAlwaysOnTop(true, 'screen-saver')
-      petWindow.once('ready-to-show', () => petWindow?.show())
+      petWindow.once('ready-to-show', () => {
+        if (!petWindow || petWindow.isDestroyed()) return
+        hideMacWindowControls(petWindow)
+        petWindow.show()
+      })
       loadWindowRoute(ctx, petWindow, '/pet-window')
 
       petWindow.on('system-context-menu', (event) => {
